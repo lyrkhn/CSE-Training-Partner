@@ -11,6 +11,11 @@ export const navigationItems: NavItem[] = [
   { title: "Dashboard", href: "/", icon: "dashboard" },
   { title: "Simulation Courses", href: "/courses", icon: "courses" },
   { title: "Simulation Session", href: "/simulation", icon: "simulation" },
+  {
+    title: "ConvoAI Lab",
+    href: "/simulations/frustrated-customer-escalation/session",
+    icon: "lab",
+  },
   { title: "Assessment Results", href: "/assessment", icon: "assessment" },
   { title: "Profile", href: "/profile", icon: "profile" },
 ];

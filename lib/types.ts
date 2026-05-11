@@ -1,7 +1,7 @@
 export type NavItem = {
   title: string;
   href: string;
-  icon: "dashboard" | "courses" | "simulation" | "assessment" | "profile";
+  icon: "dashboard" | "courses" | "simulation" | "assessment" | "profile" | "lab";
 };
 
 export type Scenario = {

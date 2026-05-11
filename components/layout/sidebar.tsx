@@ -10,6 +10,7 @@ import {
   AssessmentIcon,
   CoursesIcon,
   DashboardIcon,
+  LabIcon,
   ProfileIcon,
   SimulationIcon,
 } from "@/components/ui/icons";
@@ -26,6 +27,8 @@ function iconFor(item: NavItem["icon"], className = "h-5 w-5") {
       return <SimulationIcon {...iconProps} />;
     case "assessment":
       return <AssessmentIcon {...iconProps} />;
+    case "lab":
+      return <LabIcon {...iconProps} />;
     default:
       return <ProfileIcon {...iconProps} />;
   }

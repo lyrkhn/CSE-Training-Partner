@@ -92,3 +92,14 @@ export function PanelLeftIcon(props: SVGProps<SVGSVGElement>) {
     </BaseIcon>
   );
 }
+
+export function LabIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M9 3v4l-4.5 8.2A3 3 0 0 0 7.1 20h9.8a3 3 0 0 0 2.6-4.8L15 7V3" />
+      <path d="M8 3h8" />
+      <path d="M9 12h6" />
+      <path d="M8 16h8" />
+    </BaseIcon>
+  );
+}

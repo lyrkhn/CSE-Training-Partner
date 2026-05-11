@@ -4,6 +4,7 @@ import { ScenarioCard } from "@/components/dashboard/scenario-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 import { listEvaluations } from "@/lib/services/evaluations";
 import { getProgressOverview } from "@/lib/services/progress";
 import { listScenarios } from "@/lib/services/scenarios";
@@ -75,6 +76,30 @@ export default async function DashboardPage() {
         </div>
 
         <AssessmentCard assessment={evaluationList[0]} />
+      </section>
+
+      <section>
+        <Card className="overflow-hidden border border-cyan-400/20 bg-[linear-gradient(135deg,rgba(8,47,73,0.96),rgba(12,74,110,0.92),rgba(14,116,144,0.82))] text-white">
+          <CardContent className="flex flex-col gap-5 p-8 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.26em] text-cyan-200">ConvoAI Lab</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-tight">
+                Test the frustrated customer escalation voice session
+              </h2>
+              <p className="mt-3 max-w-3xl text-sm leading-7 text-cyan-50/85">
+                Launch the dark-mode sample page for Agora ConvoAI prompt setup, mock call controls,
+                and the new server-side AccessToken2 RTC token generator flow.
+              </p>
+            </div>
+
+            <Link
+              href="/simulations/frustrated-customer-escalation/session"
+              className="inline-flex items-center justify-center rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-50"
+            >
+              Open ConvoAI Session
+            </Link>
+          </CardContent>
+        </Card>
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
