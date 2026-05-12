@@ -7,6 +7,12 @@ import type {
   IMicrophoneAudioTrack,
   IRemoteAudioTrack,
 } from "agora-rtc-sdk-ng";
+import {
+  mapToolkitTranscriptItems,
+  type NormalizedTranscript,
+  type ToolkitTranscriptItem,
+  type ToolkitTranscriptMetadata,
+} from "@/src/lib/convoai/transcriptMapper";
 
 type CallStatus = "Waiting" | "Connecting" | "In Call" | "Muted" | "Ended";
 
@@ -46,6 +52,24 @@ type TranscriptItem = {
   time: string;
 };
 
+type StreamChunkEnvelope = {
+  messageId: string;
+  partIndex: number;
+  partSum: number;
+  content: string;
+};
+
+type DataStreamTranscriptMessage = {
+  object?: string;
+  text?: string;
+  stream_id?: number;
+  turn_id?: number;
+  user_id?: string;
+  text_ts?: number;
+  final?: boolean;
+  turn_status?: number;
+};
+
 const fixedGreetingSwitch = "single_first";
 const fixedDelayMs = 1200;
 const quietMeterLevels = [7, 9, 11, 12, 13, 12, 11, 9, 7];
@@ -75,6 +99,38 @@ function buildMeterLevels(level: number, profile: number[]) {
   return profile.map((weight) => Math.round(7 + intensity * 46 * weight));
 }
 
+function parseStreamChunkEnvelope(rawChunk: string): StreamChunkEnvelope | null {
+  // Matches the official ConvoAI web transcript data-stream chunk shape:
+  // {message_id}|{part_idx}|{part_sum}|{base64_chunk}
+  const first = rawChunk.indexOf("|");
+  const second = rawChunk.indexOf("|", first + 1);
+  const third = rawChunk.indexOf("|", second + 1);
+  if (first < 0 || second < 0 || third < 0) {
+    return null;
+  }
+
+  const messageId = rawChunk.slice(0, first);
+  const partIndex = Number(rawChunk.slice(first + 1, second));
+  const partSumRaw = rawChunk.slice(second + 1, third);
+  const content = rawChunk.slice(third + 1);
+  const partSum = partSumRaw === "???" ? -1 : Number(partSumRaw);
+
+  if (!messageId || Number.isNaN(partIndex) || Number.isNaN(partSum) || partSum <= 0) {
+    return null;
+  }
+
+  return {
+    messageId,
+    partIndex,
+    partSum,
+    content,
+  };
+}
+
+function decodeUtf8(bytes: Uint8Array) {
+  return new TextDecoder().decode(bytes);
+}
+
 export default function FrustratedCustomerEscalationSessionPage() {
   const [systemMessage, setSystemMessage] = useState(
     "You are a frustrated enterprise customer whose production support case has bounced between teams. Challenge vague troubleshooting, demand ownership, and respond more positively when the engineer is calm, specific, and accountable.",
@@ -91,6 +147,7 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const [agentLevels, setAgentLevels] = useState(quietMeterLevels);
   const [startResponse, setStartResponse] = useState<StartResponse | null>(null);
   const [transcript, setTranscript] = useState<TranscriptItem[]>(initialTranscript);
+  const [normalizedTranscript, setNormalizedTranscript] = useState<NormalizedTranscript[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState("DISCONNECTED");
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
@@ -103,6 +160,11 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const engineerEnvelopeRef = useRef(0);
   const agentEnvelopeRef = useRef(0);
   const agentIdleWaveRef = useRef(0);
+  const transcriptChunkCacheRef = useRef<
+    Map<string, { parts: Map<number, string>; partSum: number }>
+  >(new Map());
+  const transcriptItemMapRef = useRef<Map<string, ToolkitTranscriptItem>>(new Map());
+  const finalizedTranscriptKeysRef = useRef<Set<string>>(new Set());
 
   const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID ?? "";
   const isActiveCall = status === "In Call" || status === "Muted";
@@ -165,6 +227,94 @@ export default function FrustratedCustomerEscalationSessionPage() {
     }
   }, [status]);
 
+  function upsertNormalizedTranscript(entry: ToolkitTranscriptItem) {
+    const key = `${entry.uid}-${entry.stream_id}-${entry.turn_id}-${entry.metadata?.object ?? "unknown"}`;
+    if (finalizedTranscriptKeysRef.current.has(key)) {
+      return;
+    }
+
+    const existing = transcriptItemMapRef.current.get(key);
+    const nextEntry =
+      existing && existing.status !== 0
+        ? existing
+        : {
+            ...entry,
+            _time: existing?._time ?? entry._time,
+          };
+
+    transcriptItemMapRef.current.set(key, nextEntry);
+    if (nextEntry.status !== 0) {
+      finalizedTranscriptKeysRef.current.add(key);
+    }
+    const mapped = mapToolkitTranscriptItems([...transcriptItemMapRef.current.values()], {
+      traineeUid: startResponse?.traineeUid,
+      agentUid: startResponse?.agentUid,
+    });
+    setNormalizedTranscript(mapped.sort((a, b) => a.timestamp.localeCompare(b.timestamp)));
+  }
+
+  function handleToolkitStreamMessage(publisherUid: string, payload: Uint8Array) {
+    const chunkEnvelope = parseStreamChunkEnvelope(decodeUtf8(payload));
+    if (!chunkEnvelope) {
+      return;
+    }
+
+    const cached = transcriptChunkCacheRef.current.get(chunkEnvelope.messageId) ?? {
+      parts: new Map<number, string>(),
+      partSum: chunkEnvelope.partSum,
+    };
+    cached.partSum = chunkEnvelope.partSum;
+    cached.parts.set(chunkEnvelope.partIndex, chunkEnvelope.content);
+    transcriptChunkCacheRef.current.set(chunkEnvelope.messageId, cached);
+
+    if (cached.parts.size !== cached.partSum) {
+      return;
+    }
+
+    const assembled = Array.from(cached.parts.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map((entry) => entry[1])
+      .join("");
+    transcriptChunkCacheRef.current.delete(chunkEnvelope.messageId);
+
+    let parsed: DataStreamTranscriptMessage;
+    try {
+      parsed = JSON.parse(atob(assembled)) as DataStreamTranscriptMessage;
+    } catch {
+      return;
+    }
+
+    // Official toolkit transcript object types.
+    const isUserTranscript = parsed.object === "user.transcription";
+    const isAgentTranscript = parsed.object === "assistant.transcription";
+    const text = typeof parsed.text === "string" ? parsed.text.trim() : "";
+
+    if ((!isUserTranscript && !isAgentTranscript) || !text) {
+      return;
+    }
+
+    const metadata: ToolkitTranscriptMetadata = {
+      object: parsed.object,
+      user_id: parsed.user_id,
+      stream_id: typeof parsed.stream_id === "number" ? parsed.stream_id : undefined,
+      turn_id: typeof parsed.turn_id === "number" ? parsed.turn_id : undefined,
+    };
+    const sourceTimestamp =
+      typeof parsed.text_ts === "number" && Number.isFinite(parsed.text_ts)
+        ? parsed.text_ts
+        : Date.now();
+
+    upsertNormalizedTranscript({
+      uid: publisherUid,
+      stream_id: typeof parsed.stream_id === "number" ? parsed.stream_id : 0,
+      turn_id: typeof parsed.turn_id === "number" ? parsed.turn_id : Date.now(),
+      _time: sourceTimestamp,
+      text,
+      status: typeof parsed.turn_status === "number" ? parsed.turn_status : parsed.final ? 1 : 0,
+      metadata,
+    });
+  }
+
   async function joinCall() {
     if (isJoining) return;
 
@@ -173,6 +323,10 @@ export default function FrustratedCustomerEscalationSessionPage() {
     setErrorMessage(null);
     setAutoplayBlocked(false);
     setRemoteAudioPublished(false);
+    transcriptChunkCacheRef.current.clear();
+    transcriptItemMapRef.current.clear();
+    finalizedTranscriptKeysRef.current.clear();
+    setNormalizedTranscript([]);
 
     try {
       const response = await fetch("/api/convoai/start", {
@@ -210,6 +364,7 @@ export default function FrustratedCustomerEscalationSessionPage() {
 
       const data: StartResponse = await response.json();
       agentIdRef.current = data.agentId;
+      setStartResponse(data);
       const AgoraRTC = (await import("agora-rtc-sdk-ng")).default;
       AgoraRTC.onAutoplayFailed = () => {
         setAutoplayBlocked(true);
@@ -219,6 +374,10 @@ export default function FrustratedCustomerEscalationSessionPage() {
 
       client.on("connection-state-change", (currentState) => {
         setConnectionState(currentState);
+      });
+
+      client.on("stream-message", (uid, payload) => {
+        handleToolkitStreamMessage(String(uid), payload);
       });
 
       client.on("user-published", async (user, mediaType) => {
@@ -266,7 +425,6 @@ export default function FrustratedCustomerEscalationSessionPage() {
       localAudioTrackRef.current = microphoneTrack;
       await client.publish([microphoneTrack]);
 
-      setStartResponse(data);
       setStatus("In Call");
       setIsMuted(false);
       setTranscript([
@@ -310,6 +468,10 @@ export default function FrustratedCustomerEscalationSessionPage() {
       }
       remoteAudioTrackRef.current = null;
       setRemoteAudioPublished(false);
+      setNormalizedTranscript([]);
+      transcriptChunkCacheRef.current.clear();
+      transcriptItemMapRef.current.clear();
+      finalizedTranscriptKeysRef.current.clear();
       if (remotePublishWatchdogRef.current) {
         window.clearTimeout(remotePublishWatchdogRef.current);
         remotePublishWatchdogRef.current = null;
@@ -387,6 +549,10 @@ export default function FrustratedCustomerEscalationSessionPage() {
       setIsAiSpeaking(false);
       setEngineerLevels(quietMeterLevels);
       setAgentLevels(quietMeterLevels);
+      setNormalizedTranscript([]);
+      transcriptChunkCacheRef.current.clear();
+      transcriptItemMapRef.current.clear();
+      finalizedTranscriptKeysRef.current.clear();
       setTranscript((current) => [
         ...current,
         {
@@ -420,6 +586,9 @@ export default function FrustratedCustomerEscalationSessionPage() {
         }
         remoteAudioTrackRef.current = null;
         setRemoteAudioPublished(false);
+        transcriptChunkCacheRef.current.clear();
+        transcriptItemMapRef.current.clear();
+        finalizedTranscriptKeysRef.current.clear();
         if (remotePublishWatchdogRef.current) {
           window.clearTimeout(remotePublishWatchdogRef.current);
           remotePublishWatchdogRef.current = null;
@@ -688,19 +857,58 @@ export default function FrustratedCustomerEscalationSessionPage() {
 
             <div className="rounded-[28px] border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
               <div className="flex items-center justify-between">
-                <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Mock Transcript</p>
-                <span className="text-xs text-slate-500">{transcript.length} events</span>
+                <p className="text-xs uppercase tracking-[0.26em] text-slate-500">
+                  Live Transcript (Toolkit)
+                </p>
+                <span className="text-xs text-slate-500">
+                  {normalizedTranscript.length} transcript lines
+                </span>
               </div>
               <div className="mt-4 max-h-[420px] space-y-3 overflow-y-auto pr-1">
-                {transcript.map((item) => (
-                  <div key={item.id} className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-white">{item.speaker}</p>
-                      <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{item.time}</p>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-slate-300">{item.message}</p>
+                {normalizedTranscript.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-white/10 bg-slate-950/30 p-4 text-sm text-slate-400">
+                    No live transcript received yet. Join the call and start speaking to see
+                    `engineer` and `customer_ai` entries from the ConvoAI data stream flow.
                   </div>
-                ))}
+                ) : (
+                  normalizedTranscript.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-white/10 bg-slate-950/50 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-white">{item.speaker_type}</p>
+                        <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                          {new Date(item.timestamp).toLocaleTimeString()}
+                        </p>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">speaker_id: {item.speaker_id}</p>
+                      <p className="mt-2 text-sm leading-6 text-slate-300">{item.text}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="mt-4 border-t border-white/10 pt-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">System Events</p>
+                  <span className="text-xs text-slate-500">{transcript.length} events</span>
+                </div>
+                <div className="mt-3 max-h-[220px] space-y-3 overflow-y-auto pr-1">
+                  {transcript.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-white/10 bg-slate-950/50 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-white">{item.speaker}</p>
+                        <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                          {item.time}
+                        </p>
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-slate-300">{item.message}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
