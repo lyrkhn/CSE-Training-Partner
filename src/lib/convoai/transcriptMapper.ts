@@ -4,6 +4,7 @@ export type NormalizedTranscript = {
   speaker_id: string;
   text: string;
   timestamp: string;
+  is_final: boolean;
 };
 
 export type ToolkitTranscriptMetadata = {
@@ -74,6 +75,7 @@ export function mapToolkitTranscriptItem(
     speaker_id: speakerId,
     text,
     timestamp: new Date(item._time).toISOString(),
+    is_final: item.status !== 0,
   };
 }
 

@@ -13,6 +13,11 @@ import {
   type ToolkitTranscriptItem,
   type ToolkitTranscriptMetadata,
 } from "@/src/lib/convoai/transcriptMapper";
+import type {
+  MatchedObjective,
+  Objective,
+  TranscriptEntry,
+} from "@/src/lib/objectives/types";
 
 type CallStatus = "Waiting" | "Connecting" | "In Call" | "Muted" | "Ended";
 
@@ -72,6 +77,37 @@ type DataStreamTranscriptMessage = {
 
 const fixedGreetingSwitch = "single_first";
 const fixedDelayMs = 1200;
+const engineerTurnEndDelayMs = 1400;
+const autoCloseFallbackMs = 9500;
+const scenarioId = "frustrated-customer-escalation";
+const defaultEvaluatorPrompt =
+  "You are a hidden objective evaluator for a technical support training simulation. Evaluate only the support engineer's responses. Determine whether the latest engineer message satisfies any incomplete objectives. Only mark an objective complete if clearly satisfied. Use exact evidence from the engineer response. Return strict JSON only.";
+const defaultObjectives: Objective[] = [
+  {
+    id: "objective-acknowledge-frustration",
+    label: "Acknowledge customer frustration",
+    required: true,
+    completed: false,
+  },
+  {
+    id: "objective-ask-uid",
+    label: "Ask for affected UID",
+    required: true,
+    completed: false,
+  },
+  {
+    id: "objective-ask-time",
+    label: "Ask for session time or approximate timestamp",
+    required: true,
+    completed: false,
+  },
+  {
+    id: "objective-next-steps",
+    label: "Provide clear next steps",
+    required: true,
+    completed: false,
+  },
+];
 const quietMeterLevels = [7, 9, 11, 12, 13, 12, 11, 9, 7];
 const engineerMeterProfile = [0.45, 0.62, 0.82, 0.95, 1, 0.95, 0.82, 0.62, 0.45];
 const agentMeterProfile = [0.5, 0.68, 0.86, 0.97, 1, 0.97, 0.86, 0.68, 0.5];
@@ -92,6 +128,10 @@ function formatClock(value: number) {
 function sessionTimestamp() {
   const now = new Date();
   return `${formatClock(now.getMinutes())}:${formatClock(now.getSeconds())}`;
+}
+
+function objectiveEvalEntryKey(entry: NormalizedTranscript) {
+  return `${entry.id}::${entry.timestamp}::${entry.text}`;
 }
 
 function buildMeterLevels(level: number, profile: number[]) {
@@ -133,11 +173,13 @@ function decodeUtf8(bytes: Uint8Array) {
 
 export default function FrustratedCustomerEscalationSessionPage() {
   const [systemMessage, setSystemMessage] = useState(
-    "You are a frustrated enterprise customer whose production support case has bounced between teams. Challenge vague troubleshooting, demand ownership, and respond more positively when the engineer is calm, specific, and accountable.",
+    "You are a frustrated Agora customer whose production support case has bounced between teams. Challenge vague troubleshooting, demand ownership, and respond more positively when the engineer is calm, specific, and accountable.",
   );
   const [greetingMessage, setGreetingMessage] = useState(
     "I have already repeated this issue three times. Why is nobody actually fixing it?",
   );
+  const [evaluatorPrompt, setEvaluatorPrompt] = useState(defaultEvaluatorPrompt);
+  const [objectives, setObjectives] = useState<Objective[]>(defaultObjectives);
   const [status, setStatus] = useState<CallStatus>("Waiting");
   const [isMuted, setIsMuted] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
@@ -152,6 +194,10 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const [connectionState, setConnectionState] = useState("DISCONNECTED");
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [remoteAudioPublished, setRemoteAudioPublished] = useState(false);
+  const [isEvaluatingObjectives, setIsEvaluatingObjectives] = useState(false);
+  const [objectiveEvalError, setObjectiveEvalError] = useState<string | null>(null);
+  const [showCompletionResultModal, setShowCompletionResultModal] = useState(false);
+  const [objectiveEvalTick, setObjectiveEvalTick] = useState(0);
   const rtcClientRef = useRef<IAgoraRTCClient | null>(null);
   const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const remoteAudioTrackRef = useRef<IRemoteAudioTrack | null>(null);
@@ -165,9 +211,22 @@ export default function FrustratedCustomerEscalationSessionPage() {
   >(new Map());
   const transcriptItemMapRef = useRef<Map<string, ToolkitTranscriptItem>>(new Map());
   const finalizedTranscriptKeysRef = useRef<Set<string>>(new Set());
+  const evaluatedEngineerEntryIdsRef = useRef<Set<string>>(new Set());
+  const autoCloseTriggeredRef = useRef(false);
+  const autoCloseAwaitingAgentTurnRef = useRef(false);
+  const autoCloseRequestedAtRef = useRef<number>(0);
+  const autoCloseFallbackTimerRef = useRef<number | null>(null);
+  const objectiveEvalTimerRef = useRef<number | null>(null);
 
   const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID ?? "";
   const isActiveCall = status === "In Call" || status === "Muted";
+  const hasEnded = status === "Ended";
+  const objectivesLocked = status === "Connecting" || isActiveCall || isEnding || isJoining;
+  const allRequiredObjectivesCompleted = objectives
+    .filter((objective) => objective.required)
+    .every((objective) => objective.completed);
+  const showSimulationCompleted = hasEnded && allRequiredObjectivesCompleted;
+  const hasFailedObjectives = hasEnded && !allRequiredObjectivesCompleted;
 
   useEffect(() => {
     if (!isActiveCall) {
@@ -226,6 +285,279 @@ export default function FrustratedCustomerEscalationSessionPage() {
         return "border-sky-400/30 bg-sky-400/10 text-sky-200";
     }
   }, [status]);
+
+  function scheduleObjectiveEvalRetry(waitMs: number) {
+    if (objectiveEvalTimerRef.current) {
+      window.clearTimeout(objectiveEvalTimerRef.current);
+      objectiveEvalTimerRef.current = null;
+    }
+    objectiveEvalTimerRef.current = window.setTimeout(() => {
+      setObjectiveEvalTick((current) => current + 1);
+    }, Math.max(100, waitMs));
+  }
+
+  function clearObjectiveEvalRetry() {
+    if (objectiveEvalTimerRef.current) {
+      window.clearTimeout(objectiveEvalTimerRef.current);
+      objectiveEvalTimerRef.current = null;
+    }
+  }
+
+  function clearAutoCloseFallbackTimer() {
+    if (autoCloseFallbackTimerRef.current) {
+      window.clearTimeout(autoCloseFallbackTimerRef.current);
+      autoCloseFallbackTimerRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    if (!isActiveCall || isEvaluatingObjectives) {
+      clearObjectiveEvalRetry();
+      return;
+    }
+
+    const incompleteObjectives = objectives.filter(
+      (objective) => !objective.completed && objective.label.trim(),
+    );
+    if (incompleteObjectives.length === 0) {
+      clearObjectiveEvalRetry();
+      return;
+    }
+
+    const pendingFinalEngineerEntries = normalizedTranscript.filter(
+      (entry) =>
+        entry.speaker_type === "engineer" &&
+        entry.is_final &&
+        !evaluatedEngineerEntryIdsRef.current.has(objectiveEvalEntryKey(entry)),
+    );
+    if (pendingFinalEngineerEntries.length === 0) {
+      clearObjectiveEvalRetry();
+      return;
+    }
+
+    const latestEngineerEntry = pendingFinalEngineerEntries[pendingFinalEngineerEntries.length - 1];
+    const latestTranscriptEntry = normalizedTranscript[normalizedTranscript.length - 1];
+    const engineerTimestampMs = Date.parse(latestEngineerEntry.timestamp);
+    const latestTimestampMs = latestTranscriptEntry
+      ? Date.parse(latestTranscriptEntry.timestamp)
+      : Number.NaN;
+    const turnEndedByCustomerAi =
+      latestTranscriptEntry?.speaker_type === "customer_ai" &&
+      Number.isFinite(engineerTimestampMs) &&
+      Number.isFinite(latestTimestampMs) &&
+      latestTimestampMs >= engineerTimestampMs;
+    const silenceSinceEngineerMs = Number.isFinite(engineerTimestampMs)
+      ? Date.now() - engineerTimestampMs
+      : 0;
+    const turnEndedBySilence = silenceSinceEngineerMs >= engineerTurnEndDelayMs;
+
+    if (!turnEndedByCustomerAi && !turnEndedBySilence) {
+      scheduleObjectiveEvalRetry(engineerTurnEndDelayMs - silenceSinceEngineerMs);
+      return;
+    }
+
+    clearObjectiveEvalRetry();
+    const latestEngineerEvalKey = objectiveEvalEntryKey(latestEngineerEntry);
+    evaluatedEngineerEntryIdsRef.current.add(latestEngineerEvalKey);
+    setIsEvaluatingObjectives(true);
+    setObjectiveEvalError(null);
+
+    const recentTranscript: TranscriptEntry[] = normalizedTranscript.slice(-16).map((entry) => ({
+      id: entry.id,
+      speaker_type: entry.speaker_type,
+      speaker_id: entry.speaker_id,
+      text: entry.text,
+      timestamp: entry.timestamp,
+    }));
+
+    void fetch("/api/objectives/evaluate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        scenarioId,
+        evaluator_prompt: evaluatorPrompt,
+        latestEngineerMessage: latestEngineerEntry.text,
+        incompleteObjectives,
+        recentTranscript,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string; details?: unknown }
+            | null;
+          const details =
+            typeof payload?.details === "string"
+              ? payload.details
+              : payload?.details
+                ? JSON.stringify(payload.details)
+                : "";
+          throw new Error(
+            [payload?.error ?? `Objective evaluator failed with HTTP ${response.status}.`, details]
+              .filter(Boolean)
+              .join(" "),
+          );
+        }
+        return (await response.json()) as { matchedObjectives?: MatchedObjective[] };
+      })
+      .then((payload) => {
+        const matchedObjectives = Array.isArray(payload.matchedObjectives)
+          ? payload.matchedObjectives
+          : [];
+        mergeObjectiveMatches(matchedObjectives);
+      })
+      .catch((error) => {
+        evaluatedEngineerEntryIdsRef.current.delete(latestEngineerEvalKey);
+        setObjectiveEvalError(
+          error instanceof Error
+            ? error.message
+            : "Unable to evaluate objective coverage for the latest response.",
+        );
+      })
+      .finally(() => {
+        setIsEvaluatingObjectives(false);
+      });
+  }, [
+    normalizedTranscript,
+    objectives,
+    evaluatorPrompt,
+    isActiveCall,
+    isEvaluatingObjectives,
+    objectiveEvalTick,
+  ]);
+
+  useEffect(() => {
+    if (!isActiveCall || !allRequiredObjectivesCompleted || autoCloseTriggeredRef.current || isEnding) {
+      return;
+    }
+
+    autoCloseTriggeredRef.current = true;
+
+    void (async () => {
+      const closingLine =
+        "Thanks for your support today. You covered all required objectives, so we can close this session now. Goodbye.";
+      const activeAgentId = agentIdRef.current;
+
+      if (activeAgentId) {
+        setTranscript((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            speaker: "System",
+            time: sessionTimestamp(),
+            message: "All required objectives completed. Triggering AI closing line.",
+          },
+        ]);
+
+        const speakResponse = await fetch("/api/convoai/speak", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            agent_id: activeAgentId,
+            text: closingLine,
+          }),
+        });
+
+        if (!speakResponse.ok) {
+          const payload = (await speakResponse.json().catch(() => null)) as
+            | { error?: string; details?: unknown }
+            | null;
+          const details =
+            typeof payload?.details === "string"
+              ? payload.details
+              : payload?.details
+                ? JSON.stringify(payload.details)
+                : "";
+          setTranscript((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              speaker: "System",
+              time: sessionTimestamp(),
+              message: `AI closing line request failed. Ending call anyway. ${
+                [payload?.error, details].filter(Boolean).join(" ") || ""
+              }`.trim(),
+            },
+          ]);
+          await endCall();
+        } else {
+          setTranscript((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              speaker: "System",
+              time: sessionTimestamp(),
+              message: "AI closing line sent. Waiting for agent to finish speaking before auto-end.",
+            },
+          ]);
+          autoCloseAwaitingAgentTurnRef.current = true;
+          autoCloseRequestedAtRef.current = Date.now();
+          clearAutoCloseFallbackTimer();
+          autoCloseFallbackTimerRef.current = window.setTimeout(() => {
+            if (!autoCloseAwaitingAgentTurnRef.current || isEnding) {
+              return;
+            }
+            autoCloseAwaitingAgentTurnRef.current = false;
+            setTranscript((current) => [
+              ...current,
+              {
+                id: crypto.randomUUID(),
+                speaker: "System",
+                time: sessionTimestamp(),
+                message: "Closing turn confirmation timed out. Ending call now.",
+              },
+            ]);
+            void endCall();
+          }, autoCloseFallbackMs);
+        }
+      } else {
+        await endCall();
+      }
+    })();
+  }, [allRequiredObjectivesCompleted, isActiveCall, isEnding]);
+
+  useEffect(() => {
+    if (hasEnded) {
+      setShowCompletionResultModal(true);
+      return;
+    }
+    setShowCompletionResultModal(false);
+  }, [hasEnded]);
+
+  useEffect(() => {
+    if (!isActiveCall || isEnding || !autoCloseAwaitingAgentTurnRef.current) {
+      return;
+    }
+
+    const closingUtteranceDelivered = normalizedTranscript.some((entry) => {
+      if (entry.speaker_type !== "customer_ai" || !entry.is_final || !entry.text.trim()) {
+        return false;
+      }
+      const timestampMs = Date.parse(entry.timestamp);
+      return Number.isFinite(timestampMs) && timestampMs >= autoCloseRequestedAtRef.current;
+    });
+
+    if (!closingUtteranceDelivered) {
+      return;
+    }
+
+    autoCloseAwaitingAgentTurnRef.current = false;
+    clearAutoCloseFallbackTimer();
+    setTranscript((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        speaker: "System",
+        time: sessionTimestamp(),
+        message: "Agent closing line delivered. Ending call for both sides.",
+      },
+    ]);
+    void endCall();
+  }, [normalizedTranscript, isActiveCall, isEnding]);
 
   function upsertNormalizedTranscript(entry: ToolkitTranscriptItem) {
     const key = `${entry.uid}-${entry.stream_id}-${entry.turn_id}-${entry.metadata?.object ?? "unknown"}`;
@@ -315,6 +647,71 @@ export default function FrustratedCustomerEscalationSessionPage() {
     });
   }
 
+  function addObjective() {
+    setObjectives((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        label: "",
+        required: true,
+        completed: false,
+      },
+    ]);
+  }
+
+  function removeObjective(objectiveId: string) {
+    setObjectives((current) => current.filter((objective) => objective.id !== objectiveId));
+  }
+
+  function updateObjectiveLabel(objectiveId: string, nextLabel: string) {
+    setObjectives((current) =>
+      current.map((objective) =>
+        objective.id === objectiveId
+          ? {
+              ...objective,
+              label: nextLabel,
+            }
+          : objective,
+      ),
+    );
+  }
+
+  function updateObjectiveRequired(objectiveId: string, required: boolean) {
+    setObjectives((current) =>
+      current.map((objective) =>
+        objective.id === objectiveId
+          ? {
+              ...objective,
+              required,
+            }
+          : objective,
+      ),
+    );
+  }
+
+  function mergeObjectiveMatches(matches: MatchedObjective[]) {
+    if (matches.length === 0) {
+      return;
+    }
+
+    const matchedById = new Map(matches.map((match) => [match.id, match]));
+    setObjectives((current) =>
+      current.map((objective) => {
+        const matched = matchedById.get(objective.id);
+        if (!matched) {
+          return objective;
+        }
+        return {
+          ...objective,
+          completed: true,
+          completedAt: objective.completedAt ?? new Date().toISOString(),
+          confidence: matched.confidence,
+          evidence: matched.evidence,
+        };
+      }),
+    );
+  }
+
   async function joinCall() {
     if (isJoining) return;
 
@@ -323,10 +720,28 @@ export default function FrustratedCustomerEscalationSessionPage() {
     setErrorMessage(null);
     setAutoplayBlocked(false);
     setRemoteAudioPublished(false);
+    setObjectiveEvalError(null);
+    setShowCompletionResultModal(false);
+    setIsEvaluatingObjectives(false);
+    clearObjectiveEvalRetry();
+    autoCloseTriggeredRef.current = false;
+    autoCloseAwaitingAgentTurnRef.current = false;
+    autoCloseRequestedAtRef.current = 0;
+    clearAutoCloseFallbackTimer();
     transcriptChunkCacheRef.current.clear();
     transcriptItemMapRef.current.clear();
     finalizedTranscriptKeysRef.current.clear();
+    evaluatedEngineerEntryIdsRef.current.clear();
     setNormalizedTranscript([]);
+    setObjectives((current) =>
+      current.map((objective) => ({
+        ...objective,
+        completed: false,
+        completedAt: undefined,
+        confidence: undefined,
+        evidence: undefined,
+      })),
+    );
 
     try {
       const response = await fetch("/api/convoai/start", {
@@ -468,10 +883,17 @@ export default function FrustratedCustomerEscalationSessionPage() {
       }
       remoteAudioTrackRef.current = null;
       setRemoteAudioPublished(false);
+      setIsEvaluatingObjectives(false);
+      clearObjectiveEvalRetry();
+      autoCloseTriggeredRef.current = false;
+      autoCloseAwaitingAgentTurnRef.current = false;
+      autoCloseRequestedAtRef.current = 0;
+      clearAutoCloseFallbackTimer();
       setNormalizedTranscript([]);
       transcriptChunkCacheRef.current.clear();
       transcriptItemMapRef.current.clear();
       finalizedTranscriptKeysRef.current.clear();
+      evaluatedEngineerEntryIdsRef.current.clear();
       if (remotePublishWatchdogRef.current) {
         window.clearTimeout(remotePublishWatchdogRef.current);
         remotePublishWatchdogRef.current = null;
@@ -533,7 +955,7 @@ export default function FrustratedCustomerEscalationSessionPage() {
         setConnectionState("DISCONNECTED");
       }
 
-      await fetch("/api/convoai/end", {
+      const endResponse = await fetch("/api/convoai/end", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -542,6 +964,25 @@ export default function FrustratedCustomerEscalationSessionPage() {
           agent_id: agentIdRef.current,
         }),
       });
+      const endPayload = (await endResponse.json().catch(() => null)) as
+        | { error?: string; details?: unknown }
+        | null;
+      if (!endResponse.ok) {
+        const details =
+          typeof endPayload?.details === "string"
+            ? endPayload.details
+            : endPayload?.details
+              ? JSON.stringify(endPayload.details)
+              : "";
+        throw new Error(
+          [
+            endPayload?.error ?? `ConvoAI end request failed with HTTP ${endResponse.status}.`,
+            details,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        );
+      }
       agentIdRef.current = null;
 
       setStatus("Ended");
@@ -549,17 +990,56 @@ export default function FrustratedCustomerEscalationSessionPage() {
       setIsAiSpeaking(false);
       setEngineerLevels(quietMeterLevels);
       setAgentLevels(quietMeterLevels);
+      setIsEvaluatingObjectives(false);
+      clearObjectiveEvalRetry();
+      autoCloseTriggeredRef.current = false;
+      autoCloseAwaitingAgentTurnRef.current = false;
+      autoCloseRequestedAtRef.current = 0;
+      clearAutoCloseFallbackTimer();
       setNormalizedTranscript([]);
       transcriptChunkCacheRef.current.clear();
       transcriptItemMapRef.current.clear();
       finalizedTranscriptKeysRef.current.clear();
+      evaluatedEngineerEntryIdsRef.current.clear();
       setTranscript((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           speaker: "System",
           time: sessionTimestamp(),
-          message: "ConvoAI session ended.",
+          message: "ConvoAI session ended. Agent leave API completed.",
+        },
+      ]);
+    } catch (error) {
+      setStatus("Ended");
+      setIsMuted(false);
+      setIsAiSpeaking(false);
+      setEngineerLevels(quietMeterLevels);
+      setAgentLevels(quietMeterLevels);
+      setIsEvaluatingObjectives(false);
+      clearObjectiveEvalRetry();
+      autoCloseTriggeredRef.current = false;
+      autoCloseAwaitingAgentTurnRef.current = false;
+      autoCloseRequestedAtRef.current = 0;
+      clearAutoCloseFallbackTimer();
+      setNormalizedTranscript([]);
+      transcriptChunkCacheRef.current.clear();
+      transcriptItemMapRef.current.clear();
+      finalizedTranscriptKeysRef.current.clear();
+      evaluatedEngineerEntryIdsRef.current.clear();
+      setErrorMessage(
+        error instanceof Error ? error.message : "Unable to confirm ConvoAI end API.",
+      );
+      setTranscript((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          speaker: "System",
+          time: sessionTimestamp(),
+          message:
+            error instanceof Error
+              ? `Call ended locally, but agent leave API failed: ${error.message}`
+              : "Call ended locally, but agent leave API failed.",
         },
       ]);
     } finally {
@@ -578,7 +1058,9 @@ export default function FrustratedCustomerEscalationSessionPage() {
 
   useEffect(() => {
     return () => {
+      clearObjectiveEvalRetry();
       void (async () => {
+        clearAutoCloseFallbackTimer();
         if (localAudioTrackRef.current) {
           localAudioTrackRef.current.stop();
           localAudioTrackRef.current.close();
@@ -586,9 +1068,15 @@ export default function FrustratedCustomerEscalationSessionPage() {
         }
         remoteAudioTrackRef.current = null;
         setRemoteAudioPublished(false);
+        setIsEvaluatingObjectives(false);
+        clearObjectiveEvalRetry();
+        autoCloseTriggeredRef.current = false;
+        autoCloseAwaitingAgentTurnRef.current = false;
+        autoCloseRequestedAtRef.current = 0;
         transcriptChunkCacheRef.current.clear();
         transcriptItemMapRef.current.clear();
         finalizedTranscriptKeysRef.current.clear();
+        evaluatedEngineerEntryIdsRef.current.clear();
         if (remotePublishWatchdogRef.current) {
           window.clearTimeout(remotePublishWatchdogRef.current);
           remotePublishWatchdogRef.current = null;
@@ -624,6 +1112,46 @@ export default function FrustratedCustomerEscalationSessionPage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_52%,_#020617_100%)] px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
+      {showCompletionResultModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4">
+          <div
+            className={`w-full max-w-md rounded-3xl border p-6 text-center ${
+              showSimulationCompleted
+                ? "border-emerald-300/35 bg-slate-900/95 shadow-[0_30px_80px_-40px_rgba(16,185,129,0.65)]"
+                : "border-rose-300/35 bg-slate-900/95 shadow-[0_30px_80px_-40px_rgba(244,63,94,0.6)]"
+            }`}
+          >
+            <p
+              className={`text-xs uppercase tracking-[0.24em] ${
+                showSimulationCompleted ? "text-emerald-300" : "text-rose-300"
+              }`}
+            >
+              {showSimulationCompleted ? "Simulation Completed" : "Simulation Failed"}
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold text-white">
+              {showSimulationCompleted
+                ? "Great job"
+                : "You failed to cover all objectives"}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-slate-300">
+              {showSimulationCompleted
+                ? "You completed the call and covered all required objectives."
+                : "The call ended before all required objectives were covered. Simulation failed."}
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowCompletionResultModal(false)}
+              className={`mt-6 rounded-2xl px-4 py-2 text-sm font-semibold ${
+                showSimulationCompleted
+                  ? "bg-emerald-400 text-slate-950 hover:bg-emerald-300"
+                  : "bg-rose-400 text-white hover:bg-rose-300"
+              }`}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="rounded-[28px] border border-white/10 bg-white/5 p-6 shadow-[0_30px_80px_-40px_rgba(56,189,248,0.45)] backdrop-blur-xl">
           <div className="flex flex-col gap-3 border-b border-white/10 pb-5">
@@ -686,6 +1214,72 @@ export default function FrustratedCustomerEscalationSessionPage() {
               </div>
             </div>
           </div>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-slate-200">evaluator_prompt</span>
+              <textarea
+                value={evaluatorPrompt}
+                onChange={(event) => setEvaluatorPrompt(event.target.value)}
+                disabled={objectivesLocked}
+                rows={8}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/30 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </label>
+
+            <div className="rounded-2xl border border-white/10 bg-slate-950/45 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-slate-200">Trainee Objective Editor</p>
+                <button
+                  type="button"
+                  onClick={addObjective}
+                  disabled={objectivesLocked}
+                  className="rounded-xl bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-cyan-400/40 disabled:text-slate-300"
+                >
+                  Add Objective
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {objectives.map((objective) => (
+                  <div
+                    key={objective.id}
+                    className="rounded-xl border border-white/10 bg-slate-950/60 p-3"
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        value={objective.label}
+                        onChange={(event) => updateObjectiveLabel(objective.id, event.target.value)}
+                        disabled={objectivesLocked}
+                        placeholder="Objective label"
+                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900/90 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/30 disabled:cursor-not-allowed disabled:opacity-60"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeObjective(objective.id)}
+                        disabled={objectivesLocked || objectives.length <= 1}
+                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={objective.required}
+                        onChange={(event) =>
+                          updateObjectiveRequired(objective.id, event.target.checked)
+                        }
+                        disabled={objectivesLocked}
+                        className="h-4 w-4 rounded border-white/20 bg-slate-900 text-cyan-300"
+                      />
+                      Required
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </section>
 
         <section className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
@@ -695,6 +1289,11 @@ export default function FrustratedCustomerEscalationSessionPage() {
                 <span className={`rounded-full border px-3 py-1 text-sm font-medium ${statusTone}`}>
                   Status: {status}
                 </span>
+                {showSimulationCompleted && (
+                  <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-sm font-medium text-emerald-200">
+                    Simulation completed
+                  </span>
+                )}
                 <span className="text-sm text-slate-400">
                   {appId ? "Agora App ID detected in client env" : "NEXT_PUBLIC_AGORA_APP_ID not set"}
                 </span>
@@ -704,27 +1303,29 @@ export default function FrustratedCustomerEscalationSessionPage() {
                 </span>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={joinCall}
-                  disabled={isJoining || isActiveCall}
-                  className="rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-cyan-400/40 disabled:text-slate-300"
-                >
-                  {isJoining ? "Connecting..." : "Join Call"}
-                </button>
-                <button
-                  type="button"
-                  onClick={endCall}
-                  disabled={isEnding || status === "Waiting" || status === "Ended"}
-                  className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isEnding ? "Ending..." : "End Call"}
-                </button>
-              </div>
+              {!hasEnded && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={joinCall}
+                    disabled={isJoining || isActiveCall}
+                    className="rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-cyan-400/40 disabled:text-slate-300"
+                  >
+                    {isJoining ? "Connecting..." : "Join Call"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={endCall}
+                    disabled={isEnding || status === "Waiting"}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isEnding ? "Ending..." : "End Call"}
+                  </button>
+                </div>
+              )}
             </div>
 
-            {autoplayBlocked && (
+            {autoplayBlocked && !hasEnded && (
               <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-amber-300/35 bg-amber-300/10 px-4 py-3">
                 <p className="text-sm text-amber-100">
                   Browser blocked remote autoplay.
@@ -789,18 +1390,20 @@ export default function FrustratedCustomerEscalationSessionPage() {
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={toggleMute}
-                  disabled={!isActiveCall}
-                  className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${
-                    isMuted
-                      ? "bg-rose-500 text-white hover:bg-rose-400"
-                      : "bg-white/10 text-white hover:bg-white/15"
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  {isMuted ? "Unmute" : "Mute"}
-                </button>
+                {!hasEnded && (
+                  <button
+                    type="button"
+                    onClick={toggleMute}
+                    disabled={!isActiveCall}
+                    className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${
+                      isMuted
+                        ? "bg-rose-500 text-white hover:bg-rose-400"
+                        : "bg-white/10 text-white hover:bg-white/15"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {isMuted ? "Unmute" : "Mute"}
+                  </button>
+                )}
 
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                   <p className="mb-2 text-center text-[10px] uppercase tracking-[0.2em] text-slate-300/80">
@@ -829,6 +1432,63 @@ export default function FrustratedCustomerEscalationSessionPage() {
           </div>
 
           <div className="space-y-6">
+            <div className="rounded-[28px] border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Objective Tracker</p>
+                <span className="text-xs text-slate-500">
+                  {objectives.filter((objective) => objective.completed).length}/{objectives.length}
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {objectives.map((objective) => (
+                  <div
+                    key={`tracker-${objective.id}`}
+                    className="rounded-2xl border border-white/10 bg-slate-950/50 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-medium text-slate-100">
+                        {objective.completed ? "☑" : "☐"} {objective.label || "Untitled objective"}
+                      </p>
+                      <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                        {objective.required ? "required" : "optional"}
+                      </span>
+                    </div>
+                    {objective.completed && (
+                      <div className="mt-2 space-y-1 text-xs text-slate-300">
+                        <p>evidence: {objective.evidence ?? "--"}</p>
+                        <p>
+                          confidence:{" "}
+                          {typeof objective.confidence === "number"
+                            ? objective.confidence.toFixed(2)
+                            : "--"}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 border-t border-white/10 pt-3 text-xs text-slate-400">
+                {isEvaluatingObjectives && <p>Evaluating latest engineer response...</p>}
+                {!isEvaluatingObjectives && objectiveEvalError && (
+                  <p className="text-amber-200">{objectiveEvalError}</p>
+                )}
+                {!isEvaluatingObjectives &&
+                  !objectiveEvalError &&
+                  allRequiredObjectivesCompleted &&
+                  !hasEnded && (
+                    <p className="text-cyan-200">
+                      All required objectives completed. Waiting for call end.
+                    </p>
+                  )}
+                {!isEvaluatingObjectives && !objectiveEvalError && showSimulationCompleted && (
+                  <p className="text-emerald-200">Simulation completed</p>
+                )}
+                {!isEvaluatingObjectives && !objectiveEvalError && hasFailedObjectives && (
+                  <p className="text-rose-200">Simulation failed</p>
+                )}
+              </div>
+            </div>
+
             <div className="rounded-[28px] border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
               <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Session Details</p>
               <div className="mt-4 space-y-3 text-sm text-slate-300">
