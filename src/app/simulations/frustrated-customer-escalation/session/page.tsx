@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
 import type {
   IAgoraRTCClient,
@@ -18,6 +19,7 @@ import type {
   Objective,
   TranscriptEntry,
 } from "@/src/lib/objectives/types";
+import type { TranscriptEntry as SavedTranscriptEntry } from "@/src/lib/transcripts/types";
 
 type CallStatus = "Waiting" | "Connecting" | "In Call" | "Muted" | "Ended";
 
@@ -80,6 +82,7 @@ const fixedDelayMs = 1200;
 const engineerTurnEndDelayMs = 1400;
 const autoCloseFallbackMs = 9500;
 const scenarioId = "frustrated-customer-escalation";
+const scenarioTitle = "Frustrated Customer Escalation Session";
 const defaultEvaluatorPrompt =
   "You are a hidden objective evaluator for a technical support training simulation. Evaluate only the support engineer's responses. Determine whether the latest engineer message satisfies any incomplete objectives. Only mark an objective complete if clearly satisfied. Use exact evidence from the engineer response. Return strict JSON only.";
 const defaultObjectives: Objective[] = [
@@ -197,6 +200,9 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const [isEvaluatingObjectives, setIsEvaluatingObjectives] = useState(false);
   const [objectiveEvalError, setObjectiveEvalError] = useState<string | null>(null);
   const [showCompletionResultModal, setShowCompletionResultModal] = useState(false);
+  const [isSavingTranscript, setIsSavingTranscript] = useState(false);
+  const [saveTranscriptMessage, setSaveTranscriptMessage] = useState<string | null>(null);
+  const [savedTranscriptSessionId, setSavedTranscriptSessionId] = useState<string | null>(null);
   const [objectiveEvalTick, setObjectiveEvalTick] = useState(0);
   const rtcClientRef = useRef<IAgoraRTCClient | null>(null);
   const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
@@ -217,6 +223,7 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const autoCloseRequestedAtRef = useRef<number>(0);
   const autoCloseFallbackTimerRef = useRef<number | null>(null);
   const objectiveEvalTimerRef = useRef<number | null>(null);
+  const hasSavedTranscriptForCurrentRunRef = useRef(false);
 
   const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID ?? "";
   const isActiveCall = status === "In Call" || status === "Muted";
@@ -308,6 +315,16 @@ export default function FrustratedCustomerEscalationSessionPage() {
       window.clearTimeout(autoCloseFallbackTimerRef.current);
       autoCloseFallbackTimerRef.current = null;
     }
+  }
+
+  function toSavedTranscriptEntries(entries: NormalizedTranscript[]): SavedTranscriptEntry[] {
+    return entries.map((entry) => ({
+      id: entry.id,
+      speaker_type: entry.speaker_type,
+      speaker_id: entry.speaker_id,
+      text: entry.text,
+      timestamp: entry.timestamp,
+    }));
   }
 
   useEffect(() => {
@@ -529,6 +546,70 @@ export default function FrustratedCustomerEscalationSessionPage() {
   }, [hasEnded]);
 
   useEffect(() => {
+    if (!hasEnded || hasSavedTranscriptForCurrentRunRef.current || isSavingTranscript) {
+      return;
+    }
+
+    const completedObjectives = objectives.filter((objective) => objective.completed);
+    const transcriptForSave = toSavedTranscriptEntries(normalizedTranscript);
+
+    hasSavedTranscriptForCurrentRunRef.current = true;
+    setIsSavingTranscript(true);
+    setSaveTranscriptMessage(null);
+
+    void fetch("/api/transcripts/save", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        scenarioId,
+        scenarioTitle,
+        status: "completed",
+        completedObjectives,
+        transcript: transcriptForSave,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string; details?: unknown }
+            | null;
+          const detailText =
+            typeof payload?.details === "string"
+              ? payload.details
+              : payload?.details
+                ? JSON.stringify(payload.details)
+                : "";
+          throw new Error(
+            [payload?.error ?? `Unable to save transcript. HTTP ${response.status}.`, detailText]
+              .filter(Boolean)
+              .join(" "),
+          );
+        }
+        return (await response.json()) as { transcriptSessionId?: string };
+      })
+      .then((payload) => {
+        const transcriptSessionId =
+          typeof payload.transcriptSessionId === "string" ? payload.transcriptSessionId : "";
+        if (!transcriptSessionId) {
+          throw new Error("Transcript saved but transcriptSessionId was not returned.");
+        }
+        setSavedTranscriptSessionId(transcriptSessionId);
+        setSaveTranscriptMessage("Transcript saved");
+      })
+      .catch((error) => {
+        hasSavedTranscriptForCurrentRunRef.current = false;
+        setSaveTranscriptMessage(
+          error instanceof Error ? error.message : "Unable to save transcript.",
+        );
+      })
+      .finally(() => {
+        setIsSavingTranscript(false);
+      });
+  }, [hasEnded, isSavingTranscript, normalizedTranscript, objectives]);
+
+  useEffect(() => {
     if (!isActiveCall || isEnding || !autoCloseAwaitingAgentTurnRef.current) {
       return;
     }
@@ -721,12 +802,15 @@ export default function FrustratedCustomerEscalationSessionPage() {
     setAutoplayBlocked(false);
     setRemoteAudioPublished(false);
     setObjectiveEvalError(null);
+    setSaveTranscriptMessage(null);
+    setSavedTranscriptSessionId(null);
     setShowCompletionResultModal(false);
     setIsEvaluatingObjectives(false);
     clearObjectiveEvalRetry();
     autoCloseTriggeredRef.current = false;
     autoCloseAwaitingAgentTurnRef.current = false;
     autoCloseRequestedAtRef.current = 0;
+    hasSavedTranscriptForCurrentRunRef.current = false;
     clearAutoCloseFallbackTimer();
     transcriptChunkCacheRef.current.clear();
     transcriptItemMapRef.current.clear();
@@ -889,7 +973,6 @@ export default function FrustratedCustomerEscalationSessionPage() {
       autoCloseAwaitingAgentTurnRef.current = false;
       autoCloseRequestedAtRef.current = 0;
       clearAutoCloseFallbackTimer();
-      setNormalizedTranscript([]);
       transcriptChunkCacheRef.current.clear();
       transcriptItemMapRef.current.clear();
       finalizedTranscriptKeysRef.current.clear();
@@ -996,7 +1079,6 @@ export default function FrustratedCustomerEscalationSessionPage() {
       autoCloseAwaitingAgentTurnRef.current = false;
       autoCloseRequestedAtRef.current = 0;
       clearAutoCloseFallbackTimer();
-      setNormalizedTranscript([]);
       transcriptChunkCacheRef.current.clear();
       transcriptItemMapRef.current.clear();
       finalizedTranscriptKeysRef.current.clear();
@@ -1485,6 +1567,26 @@ export default function FrustratedCustomerEscalationSessionPage() {
                 )}
                 {!isEvaluatingObjectives && !objectiveEvalError && hasFailedObjectives && (
                   <p className="text-rose-200">Simulation failed</p>
+                )}
+                {isSavingTranscript && <p className="text-slate-300">Saving transcript...</p>}
+                {!isSavingTranscript && saveTranscriptMessage && (
+                  <p
+                    className={
+                      saveTranscriptMessage === "Transcript saved"
+                        ? "text-emerald-200"
+                        : "text-amber-200"
+                    }
+                  >
+                    {saveTranscriptMessage}
+                  </p>
+                )}
+                {!isSavingTranscript && savedTranscriptSessionId && (
+                  <Link
+                    href={`/simulations/frustrated-customer-escalation/transcripts/${savedTranscriptSessionId}`}
+                    className="inline-block rounded-xl border border-cyan-300/40 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-300/20"
+                  >
+                    View Saved Transcript
+                  </Link>
                 )}
               </div>
             </div>
