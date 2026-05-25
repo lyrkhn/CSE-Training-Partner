@@ -22,6 +22,7 @@ import type {
 import type { TranscriptEntry as SavedTranscriptEntry } from "@/src/lib/transcripts/types";
 
 type CallStatus = "Waiting" | "Connecting" | "In Call" | "Muted" | "Ended";
+type SimulationState = "in_call" | "finalizing" | "ending" | "finished";
 
 type StartResponse = {
   status: string;
@@ -80,7 +81,7 @@ type DataStreamTranscriptMessage = {
 const fixedGreetingSwitch = "single_first";
 const fixedDelayMs = 1200;
 const engineerTurnEndDelayMs = 1400;
-const autoCloseFallbackMs = 9500;
+const finalizationFallbackMs = 7000;
 const scenarioId = "frustrated-customer-escalation";
 const scenarioTitle = "Frustrated Customer Escalation Session";
 const defaultEvaluatorPrompt =
@@ -184,6 +185,8 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(defaultEvaluatorPrompt);
   const [objectives, setObjectives] = useState<Objective[]>(defaultObjectives);
   const [status, setStatus] = useState<CallStatus>("Waiting");
+  const [simulationState, setSimulationState] = useState<SimulationState>("in_call");
+  const [closingInstructionSent, setClosingInstructionSent] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
@@ -199,7 +202,6 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const [remoteAudioPublished, setRemoteAudioPublished] = useState(false);
   const [isEvaluatingObjectives, setIsEvaluatingObjectives] = useState(false);
   const [objectiveEvalError, setObjectiveEvalError] = useState<string | null>(null);
-  const [showCompletionResultModal, setShowCompletionResultModal] = useState(false);
   const [isSavingTranscript, setIsSavingTranscript] = useState(false);
   const [saveTranscriptMessage, setSaveTranscriptMessage] = useState<string | null>(null);
   const [savedTranscriptSessionId, setSavedTranscriptSessionId] = useState<string | null>(null);
@@ -218,22 +220,23 @@ export default function FrustratedCustomerEscalationSessionPage() {
   const transcriptItemMapRef = useRef<Map<string, ToolkitTranscriptItem>>(new Map());
   const finalizedTranscriptKeysRef = useRef<Set<string>>(new Set());
   const evaluatedEngineerEntryIdsRef = useRef<Set<string>>(new Set());
-  const autoCloseTriggeredRef = useRef(false);
-  const autoCloseAwaitingAgentTurnRef = useRef(false);
-  const autoCloseRequestedAtRef = useRef<number>(0);
-  const autoCloseFallbackTimerRef = useRef<number | null>(null);
+  const finalizationTimerRef = useRef<number | null>(null);
+  const finalizationObservedSpeakingRef = useRef(false);
+  const finishSimulationStartedRef = useRef(false);
   const objectiveEvalTimerRef = useRef<number | null>(null);
   const hasSavedTranscriptForCurrentRunRef = useRef(false);
 
   const appId = process.env.NEXT_PUBLIC_AGORA_APP_ID ?? "";
   const isActiveCall = status === "In Call" || status === "Muted";
   const hasEnded = status === "Ended";
-  const objectivesLocked = status === "Connecting" || isActiveCall || isEnding || isJoining;
+  const isFinished = simulationState === "finished";
+  const objectivesLocked =
+    simulationState !== "in_call" || status === "Connecting" || isActiveCall || isEnding || isJoining;
   const allRequiredObjectivesCompleted = objectives
     .filter((objective) => objective.required)
     .every((objective) => objective.completed);
-  const showSimulationCompleted = hasEnded && allRequiredObjectivesCompleted;
-  const hasFailedObjectives = hasEnded && !allRequiredObjectivesCompleted;
+  const showSimulationCompleted = isFinished && allRequiredObjectivesCompleted;
+  const hasFailedObjectives = isFinished && !allRequiredObjectivesCompleted;
 
   useEffect(() => {
     if (!isActiveCall) {
@@ -310,10 +313,10 @@ export default function FrustratedCustomerEscalationSessionPage() {
     }
   }
 
-  function clearAutoCloseFallbackTimer() {
-    if (autoCloseFallbackTimerRef.current) {
-      window.clearTimeout(autoCloseFallbackTimerRef.current);
-      autoCloseFallbackTimerRef.current = null;
+  function clearFinalizationTimer() {
+    if (finalizationTimerRef.current) {
+      window.clearTimeout(finalizationTimerRef.current);
+      finalizationTimerRef.current = null;
     }
   }
 
@@ -325,6 +328,87 @@ export default function FrustratedCustomerEscalationSessionPage() {
       text: entry.text,
       timestamp: entry.timestamp,
     }));
+  }
+
+  async function finishSimulation(reason: string) {
+    if (finishSimulationStartedRef.current) {
+      return;
+    }
+    finishSimulationStartedRef.current = true;
+
+    setSimulationState("ending");
+    setIsEnding(true);
+    clearFinalizationTimer();
+    finalizationObservedSpeakingRef.current = false;
+
+    const activeAgentId = agentIdRef.current;
+
+    const endAgentPromise = fetch("/api/convoai/end", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        agent_id: activeAgentId,
+      }),
+    }).catch((error) => error);
+
+    const localCleanupPromise = (async () => {
+      if (localAudioTrackRef.current) {
+        localAudioTrackRef.current.stop();
+        localAudioTrackRef.current.close();
+        localAudioTrackRef.current = null;
+      }
+      remoteAudioTrackRef.current = null;
+      setRemoteAudioPublished(false);
+
+      if (remotePublishWatchdogRef.current) {
+        window.clearTimeout(remotePublishWatchdogRef.current);
+        remotePublishWatchdogRef.current = null;
+      }
+
+      if (rtcClientRef.current) {
+        await rtcClientRef.current.leave().catch(() => undefined);
+        rtcClientRef.current.removeAllListeners();
+        rtcClientRef.current = null;
+      }
+
+      transcriptChunkCacheRef.current.clear();
+      transcriptItemMapRef.current.clear();
+      finalizedTranscriptKeysRef.current.clear();
+      evaluatedEngineerEntryIdsRef.current.clear();
+      setIsAiSpeaking(false);
+      setEngineerLevels(quietMeterLevels);
+      setAgentLevels(quietMeterLevels);
+      setIsMuted(false);
+      setConnectionState("DISCONNECTED");
+      clearObjectiveEvalRetry();
+      setIsEvaluatingObjectives(false);
+    })().catch((error) => error);
+
+    const [endAgentResult] = await Promise.allSettled([endAgentPromise, localCleanupPromise]);
+    agentIdRef.current = null;
+
+    setStatus("Ended");
+    setSimulationState("finished");
+    setIsEnding(false);
+
+    const endAgentFailed =
+      endAgentResult.status === "rejected" ||
+      (endAgentResult.status === "fulfilled" &&
+        endAgentResult.value instanceof Error);
+
+    setTranscript((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        speaker: "System",
+        time: sessionTimestamp(),
+        message: endAgentFailed
+          ? `Session finished (${reason}). Local cleanup done, but ConvoAI end request may have failed.`
+          : `Session finished (${reason}). AI agent and trainee left the session.`,
+      },
+    ]);
   }
 
   useEffect(() => {
@@ -446,107 +530,88 @@ export default function FrustratedCustomerEscalationSessionPage() {
   ]);
 
   useEffect(() => {
-    if (!isActiveCall || !allRequiredObjectivesCompleted || autoCloseTriggeredRef.current || isEnding) {
+    if (
+      !isActiveCall ||
+      !allRequiredObjectivesCompleted ||
+      simulationState !== "in_call" ||
+      closingInstructionSent
+    ) {
       return;
     }
 
-    autoCloseTriggeredRef.current = true;
+    setSimulationState("finalizing");
+    setClosingInstructionSent(true);
+    finalizationObservedSpeakingRef.current = false;
+    clearFinalizationTimer();
+    setTranscript((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        speaker: "System",
+        time: sessionTimestamp(),
+        message: "All required objectives completed. Wrapping up the simulation...",
+      },
+    ]);
 
     void (async () => {
-      const closingLine =
-        "Thanks for your support today. You covered all required objectives, so we can close this session now. Goodbye.";
       const activeAgentId = agentIdRef.current;
+      if (!activeAgentId) {
+        await finishSimulation("no-agent-id");
+        return;
+      }
 
-      if (activeAgentId) {
+      const finalizeResponse = await fetch("/api/convoai/finalize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          agent_id: activeAgentId,
+        }),
+      });
+
+      if (!finalizeResponse.ok) {
+        const payload = (await finalizeResponse.json().catch(() => null)) as
+          | { error?: string; details?: unknown }
+          | null;
+        const details =
+          typeof payload?.details === "string"
+            ? payload.details
+            : payload?.details
+              ? JSON.stringify(payload.details)
+              : "";
         setTranscript((current) => [
           ...current,
           {
             id: crypto.randomUUID(),
             speaker: "System",
             time: sessionTimestamp(),
-            message: "All required objectives completed. Triggering AI closing line.",
+            message: `Finalize request was not accepted. Waiting for current response to finish before ending. ${
+              [payload?.error, details].filter(Boolean).join(" ") || ""
+            }`.trim(),
           },
         ]);
-
-        const speakResponse = await fetch("/api/convoai/speak", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            agent_id: activeAgentId,
-            text: closingLine,
-          }),
-        });
-
-        if (!speakResponse.ok) {
-          const payload = (await speakResponse.json().catch(() => null)) as
-            | { error?: string; details?: unknown }
-            | null;
-          const details =
-            typeof payload?.details === "string"
-              ? payload.details
-              : payload?.details
-                ? JSON.stringify(payload.details)
-                : "";
-          setTranscript((current) => [
-            ...current,
-            {
-              id: crypto.randomUUID(),
-              speaker: "System",
-              time: sessionTimestamp(),
-              message: `AI closing line request failed. Ending call anyway. ${
-                [payload?.error, details].filter(Boolean).join(" ") || ""
-              }`.trim(),
-            },
-          ]);
-          await endCall();
-        } else {
-          setTranscript((current) => [
-            ...current,
-            {
-              id: crypto.randomUUID(),
-              speaker: "System",
-              time: sessionTimestamp(),
-              message: "AI closing line sent. Waiting for agent to finish speaking before auto-end.",
-            },
-          ]);
-          autoCloseAwaitingAgentTurnRef.current = true;
-          autoCloseRequestedAtRef.current = Date.now();
-          clearAutoCloseFallbackTimer();
-          autoCloseFallbackTimerRef.current = window.setTimeout(() => {
-            if (!autoCloseAwaitingAgentTurnRef.current || isEnding) {
-              return;
-            }
-            autoCloseAwaitingAgentTurnRef.current = false;
-            setTranscript((current) => [
-              ...current,
-              {
-                id: crypto.randomUUID(),
-                speaker: "System",
-                time: sessionTimestamp(),
-                message: "Closing turn confirmation timed out. Ending call now.",
-              },
-            ]);
-            void endCall();
-          }, autoCloseFallbackMs);
-        }
       } else {
-        await endCall();
+        setTranscript((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            speaker: "System",
+            time: sessionTimestamp(),
+            message: "Finalize instruction sent. Waiting for AI closing response.",
+          },
+        ]);
       }
     })();
-  }, [allRequiredObjectivesCompleted, isActiveCall, isEnding]);
+  }, [
+    allRequiredObjectivesCompleted,
+    isActiveCall,
+    simulationState,
+    closingInstructionSent,
+  ]);
 
   useEffect(() => {
-    if (hasEnded) {
-      setShowCompletionResultModal(true);
-      return;
-    }
-    setShowCompletionResultModal(false);
-  }, [hasEnded]);
-
-  useEffect(() => {
-    if (!hasEnded || hasSavedTranscriptForCurrentRunRef.current || isSavingTranscript) {
+    if (!isFinished || hasSavedTranscriptForCurrentRunRef.current || isSavingTranscript) {
       return;
     }
 
@@ -607,38 +672,31 @@ export default function FrustratedCustomerEscalationSessionPage() {
       .finally(() => {
         setIsSavingTranscript(false);
       });
-  }, [hasEnded, isSavingTranscript, normalizedTranscript, objectives]);
+  }, [isFinished, isSavingTranscript, normalizedTranscript, objectives]);
 
   useEffect(() => {
-    if (!isActiveCall || isEnding || !autoCloseAwaitingAgentTurnRef.current) {
+    if (simulationState !== "finalizing" || isEnding) {
+      clearFinalizationTimer();
       return;
     }
 
-    const closingUtteranceDelivered = normalizedTranscript.some((entry) => {
-      if (entry.speaker_type !== "customer_ai" || !entry.is_final || !entry.text.trim()) {
-        return false;
-      }
-      const timestampMs = Date.parse(entry.timestamp);
-      return Number.isFinite(timestampMs) && timestampMs >= autoCloseRequestedAtRef.current;
-    });
-
-    if (!closingUtteranceDelivered) {
+    if (isAiSpeaking) {
+      finalizationObservedSpeakingRef.current = true;
+      clearFinalizationTimer();
       return;
     }
 
-    autoCloseAwaitingAgentTurnRef.current = false;
-    clearAutoCloseFallbackTimer();
-    setTranscript((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        speaker: "System",
-        time: sessionTimestamp(),
-        message: "Agent closing line delivered. Ending call for both sides.",
-      },
-    ]);
-    void endCall();
-  }, [normalizedTranscript, isActiveCall, isEnding]);
+    if (finalizationObservedSpeakingRef.current) {
+      void finishSimulation("agent-closing-finished");
+      return;
+    }
+
+    if (!finalizationTimerRef.current) {
+      finalizationTimerRef.current = window.setTimeout(() => {
+        void finishSimulation("finalization-fallback");
+      }, finalizationFallbackMs);
+    }
+  }, [simulationState, isAiSpeaking, isEnding]);
 
   function upsertNormalizedTranscript(entry: ToolkitTranscriptItem) {
     const key = `${entry.uid}-${entry.stream_id}-${entry.turn_id}-${entry.metadata?.object ?? "unknown"}`;
@@ -804,14 +862,14 @@ export default function FrustratedCustomerEscalationSessionPage() {
     setObjectiveEvalError(null);
     setSaveTranscriptMessage(null);
     setSavedTranscriptSessionId(null);
-    setShowCompletionResultModal(false);
     setIsEvaluatingObjectives(false);
+    setSimulationState("in_call");
+    setClosingInstructionSent(false);
+    finishSimulationStartedRef.current = false;
     clearObjectiveEvalRetry();
-    autoCloseTriggeredRef.current = false;
-    autoCloseAwaitingAgentTurnRef.current = false;
-    autoCloseRequestedAtRef.current = 0;
+    finalizationObservedSpeakingRef.current = false;
     hasSavedTranscriptForCurrentRunRef.current = false;
-    clearAutoCloseFallbackTimer();
+    clearFinalizationTimer();
     transcriptChunkCacheRef.current.clear();
     transcriptItemMapRef.current.clear();
     finalizedTranscriptKeysRef.current.clear();
@@ -969,10 +1027,8 @@ export default function FrustratedCustomerEscalationSessionPage() {
       setRemoteAudioPublished(false);
       setIsEvaluatingObjectives(false);
       clearObjectiveEvalRetry();
-      autoCloseTriggeredRef.current = false;
-      autoCloseAwaitingAgentTurnRef.current = false;
-      autoCloseRequestedAtRef.current = 0;
-      clearAutoCloseFallbackTimer();
+      finalizationObservedSpeakingRef.current = false;
+      clearFinalizationTimer();
       transcriptChunkCacheRef.current.clear();
       transcriptItemMapRef.current.clear();
       finalizedTranscriptKeysRef.current.clear();
@@ -1014,119 +1070,8 @@ export default function FrustratedCustomerEscalationSessionPage() {
   }
 
   async function endCall() {
-    if (isEnding || status === "Waiting" || status === "Ended") return;
-
-    setIsEnding(true);
-
-    try {
-      if (localAudioTrackRef.current) {
-        localAudioTrackRef.current.stop();
-        localAudioTrackRef.current.close();
-        localAudioTrackRef.current = null;
-      }
-      remoteAudioTrackRef.current = null;
-      setRemoteAudioPublished(false);
-      if (remotePublishWatchdogRef.current) {
-        window.clearTimeout(remotePublishWatchdogRef.current);
-        remotePublishWatchdogRef.current = null;
-      }
-
-      if (rtcClientRef.current) {
-        await rtcClientRef.current.leave();
-        rtcClientRef.current.removeAllListeners();
-        rtcClientRef.current = null;
-        setConnectionState("DISCONNECTED");
-      }
-
-      const endResponse = await fetch("/api/convoai/end", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          agent_id: agentIdRef.current,
-        }),
-      });
-      const endPayload = (await endResponse.json().catch(() => null)) as
-        | { error?: string; details?: unknown }
-        | null;
-      if (!endResponse.ok) {
-        const details =
-          typeof endPayload?.details === "string"
-            ? endPayload.details
-            : endPayload?.details
-              ? JSON.stringify(endPayload.details)
-              : "";
-        throw new Error(
-          [
-            endPayload?.error ?? `ConvoAI end request failed with HTTP ${endResponse.status}.`,
-            details,
-          ]
-            .filter(Boolean)
-            .join(" "),
-        );
-      }
-      agentIdRef.current = null;
-
-      setStatus("Ended");
-      setIsMuted(false);
-      setIsAiSpeaking(false);
-      setEngineerLevels(quietMeterLevels);
-      setAgentLevels(quietMeterLevels);
-      setIsEvaluatingObjectives(false);
-      clearObjectiveEvalRetry();
-      autoCloseTriggeredRef.current = false;
-      autoCloseAwaitingAgentTurnRef.current = false;
-      autoCloseRequestedAtRef.current = 0;
-      clearAutoCloseFallbackTimer();
-      transcriptChunkCacheRef.current.clear();
-      transcriptItemMapRef.current.clear();
-      finalizedTranscriptKeysRef.current.clear();
-      evaluatedEngineerEntryIdsRef.current.clear();
-      setTranscript((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          speaker: "System",
-          time: sessionTimestamp(),
-          message: "ConvoAI session ended. Agent leave API completed.",
-        },
-      ]);
-    } catch (error) {
-      setStatus("Ended");
-      setIsMuted(false);
-      setIsAiSpeaking(false);
-      setEngineerLevels(quietMeterLevels);
-      setAgentLevels(quietMeterLevels);
-      setIsEvaluatingObjectives(false);
-      clearObjectiveEvalRetry();
-      autoCloseTriggeredRef.current = false;
-      autoCloseAwaitingAgentTurnRef.current = false;
-      autoCloseRequestedAtRef.current = 0;
-      clearAutoCloseFallbackTimer();
-      setNormalizedTranscript([]);
-      transcriptChunkCacheRef.current.clear();
-      transcriptItemMapRef.current.clear();
-      finalizedTranscriptKeysRef.current.clear();
-      evaluatedEngineerEntryIdsRef.current.clear();
-      setErrorMessage(
-        error instanceof Error ? error.message : "Unable to confirm ConvoAI end API.",
-      );
-      setTranscript((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          speaker: "System",
-          time: sessionTimestamp(),
-          message:
-            error instanceof Error
-              ? `Call ended locally, but agent leave API failed: ${error.message}`
-              : "Call ended locally, but agent leave API failed.",
-        },
-      ]);
-    } finally {
-      setIsEnding(false);
-    }
+    if (status === "Waiting" || simulationState === "finished") return;
+    await finishSimulation("manual-end");
   }
 
   async function toggleMute() {
@@ -1142,7 +1087,7 @@ export default function FrustratedCustomerEscalationSessionPage() {
     return () => {
       clearObjectiveEvalRetry();
       void (async () => {
-        clearAutoCloseFallbackTimer();
+        clearFinalizationTimer();
         if (localAudioTrackRef.current) {
           localAudioTrackRef.current.stop();
           localAudioTrackRef.current.close();
@@ -1152,9 +1097,8 @@ export default function FrustratedCustomerEscalationSessionPage() {
         setRemoteAudioPublished(false);
         setIsEvaluatingObjectives(false);
         clearObjectiveEvalRetry();
-        autoCloseTriggeredRef.current = false;
-        autoCloseAwaitingAgentTurnRef.current = false;
-        autoCloseRequestedAtRef.current = 0;
+        finalizationObservedSpeakingRef.current = false;
+        finishSimulationStartedRef.current = false;
         transcriptChunkCacheRef.current.clear();
         transcriptItemMapRef.current.clear();
         finalizedTranscriptKeysRef.current.clear();
@@ -1194,47 +1138,49 @@ export default function FrustratedCustomerEscalationSessionPage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_transparent_28%),linear-gradient(180deg,_#020617_0%,_#0f172a_52%,_#020617_100%)] px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
-      {showCompletionResultModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4">
-          <div
-            className={`w-full max-w-md rounded-3xl border p-6 text-center ${
-              showSimulationCompleted
-                ? "border-emerald-300/35 bg-slate-900/95 shadow-[0_30px_80px_-40px_rgba(16,185,129,0.65)]"
-                : "border-rose-300/35 bg-slate-900/95 shadow-[0_30px_80px_-40px_rgba(244,63,94,0.6)]"
-            }`}
-          >
-            <p
-              className={`text-xs uppercase tracking-[0.24em] ${
-                showSimulationCompleted ? "text-emerald-300" : "text-rose-300"
-              }`}
-            >
+      {isFinished && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 backdrop-blur-sm px-4">
+          <div className="w-full max-w-xl rounded-3xl border border-white/15 bg-slate-900/95 p-8 text-center shadow-[0_30px_80px_-35px_rgba(56,189,248,0.5)]">
+            <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Simulation Ended</p>
+            <h1 className="mt-3 text-3xl font-semibold text-white">
               {showSimulationCompleted ? "Simulation Completed" : "Simulation Failed"}
-            </p>
-            <h2 className="mt-3 text-2xl font-semibold text-white">
+            </h1>
+            <p className="mt-4 text-sm text-slate-300">
               {showSimulationCompleted
-                ? "Great job"
-                : "You failed to cover all objectives"}
-            </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-300">
-              {showSimulationCompleted
-                ? "You completed the call and covered all required objectives."
-                : "The call ended before all required objectives were covered. Simulation failed."}
+                ? "The AI agent provided the closing response and both participants have left the session."
+                : "The session ended before all required objectives were completed."}
             </p>
-            <button
-              type="button"
-              onClick={() => setShowCompletionResultModal(false)}
-              className={`mt-6 rounded-2xl px-4 py-2 text-sm font-semibold ${
-                showSimulationCompleted
-                  ? "bg-emerald-400 text-slate-950 hover:bg-emerald-300"
-                  : "bg-rose-400 text-white hover:bg-rose-300"
-              }`}
-            >
-              Close
-            </button>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              <Link
+                href="/courses"
+                className="rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+              >
+                Return to Courses
+              </Link>
+              <button
+                type="button"
+                onClick={joinCall}
+                className="rounded-2xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
+              >
+                Start New Simulation
+              </button>
+              {savedTranscriptSessionId && (
+                <Link
+                  href={`/simulations/frustrated-customer-escalation/transcripts/${savedTranscriptSessionId}`}
+                  className="rounded-2xl border border-cyan-300/40 bg-cyan-300/10 px-5 py-3 text-sm font-semibold text-cyan-200 hover:bg-cyan-300/20"
+                >
+                  View Saved Transcript
+                </Link>
+              )}
+            </div>
           </div>
         </div>
       )}
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div
+        className={`mx-auto max-w-7xl space-y-6 transition ${
+          isFinished ? "pointer-events-none blur-sm opacity-55" : ""
+        }`}
+      >
         <section className="rounded-[28px] border border-white/10 bg-white/5 p-6 shadow-[0_30px_80px_-40px_rgba(56,189,248,0.45)] backdrop-blur-xl">
           <div className="flex flex-col gap-3 border-b border-white/10 pb-5">
             <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Agora ConvoAI Sample</p>
@@ -1407,6 +1353,12 @@ export default function FrustratedCustomerEscalationSessionPage() {
               )}
             </div>
 
+            {simulationState === "finalizing" && (
+              <div className="mt-4 rounded-2xl border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                All required objectives completed. Wrapping up the simulation...
+              </div>
+            )}
+
             {autoplayBlocked && !hasEnded && (
               <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-amber-300/35 bg-amber-300/10 px-4 py-3">
                 <p className="text-sm text-amber-100">
@@ -1556,10 +1508,9 @@ export default function FrustratedCustomerEscalationSessionPage() {
                 )}
                 {!isEvaluatingObjectives &&
                   !objectiveEvalError &&
-                  allRequiredObjectivesCompleted &&
-                  !hasEnded && (
+                  simulationState === "finalizing" && (
                     <p className="text-cyan-200">
-                      All required objectives completed. Waiting for call end.
+                      All required objectives completed. Wrapping up the simulation...
                     </p>
                   )}
                 {!isEvaluatingObjectives && !objectiveEvalError && showSimulationCompleted && (
