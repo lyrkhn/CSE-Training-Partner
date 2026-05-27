@@ -109,8 +109,8 @@ export async function POST(request: Request) {
     );
   }
 
-  if (delayMs !== 1200) {
-    return NextResponse.json({ error: "delay_ms must be 1200." }, { status: 400 });
+  if (![800, 1200].includes(delayMs)) {
+    return NextResponse.json({ error: "delay_ms must be 800 or 1200." }, { status: 400 });
   }
 
   const channelName = `mock-frustrated-customer-${Date.now()}`;

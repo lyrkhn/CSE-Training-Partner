@@ -103,3 +103,14 @@ export function LabIcon(props: SVGProps<SVGSVGElement>) {
     </BaseIcon>
   );
 }
+
+export function BuilderIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14.5a.5.5 0 0 1-.8.4L16 17.5l-3.2 2.4a.5.5 0 0 1-.6 0L9 17.5l-3.2 2.4a.5.5 0 0 1-.8-.4z" />
+      <path d="M8 8h6" />
+      <path d="M8 12h8" />
+      <path d="M16.5 6.5 18 8l-4.5 4.5H12v-1.5z" />
+    </BaseIcon>
+  );
+}

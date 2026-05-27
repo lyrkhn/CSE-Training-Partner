@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 import "@/app/globals.css";
 
 export const metadata: Metadata = {
-  title: "TSE Training Platform",
+  title: "CSE AI Roleplay Partner",
   description: "Technical Support Engineer training dashboard with simulations and assessments.",
 };
 

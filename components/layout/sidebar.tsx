@@ -8,6 +8,7 @@ import { navigationItems } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import {
   AssessmentIcon,
+  BuilderIcon,
   CoursesIcon,
   DashboardIcon,
   LabIcon,
@@ -29,6 +30,8 @@ function iconFor(item: NavItem["icon"], className = "h-5 w-5") {
       return <AssessmentIcon {...iconProps} />;
     case "lab":
       return <LabIcon {...iconProps} />;
+    case "builder":
+      return <BuilderIcon {...iconProps} />;
     default:
       return <ProfileIcon {...iconProps} />;
   }
