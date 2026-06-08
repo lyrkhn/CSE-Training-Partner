@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model RolePlay {
+  id                 String   @id
+  status             String
+  meetingTitle       String
+  characterName      String
+  characterRole      String
+  durationMinutes    Int
+  assignedTraineeIds Json
+  config             Json
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  transcriptSessions TranscriptSession[]
+  assessments         FinalAssessment[]
+  attempts            RolePlayAttempt[]
+
+  @@index([status])
+  @@index([updatedAt])
+}
+
+model TranscriptSession {
+  id                  String   @id
+  scenarioId          String
+  scenarioTitle       String
+  status              String
+  completedObjectives Json
+  transcript          Json
+  createdAt           DateTime @default(now())
+
+  rolePlay    RolePlay?          @relation(fields: [scenarioId], references: [id], onDelete: NoAction)
+  assessments FinalAssessment[]
+
+  @@index([scenarioId])
+  @@index([createdAt])
+}
+
+model FinalAssessment {
+  id                  String   @id
+  transcriptSessionId String
+  scenarioId          String
+  scenarioTitle       String
+  learnerRole         String?
+  overallScore        Int
+  outcome             String
+  summary             String
+  strengths           Json
+  improvements        Json
+  completedObjectives Json
+  missedObjectives    Json
+  dimensions          Json
+  transcript          Json
+  createdAt           DateTime @default(now())
+
+  transcriptSession TranscriptSession? @relation(fields: [transcriptSessionId], references: [id], onDelete: NoAction)
+  rolePlay          RolePlay?          @relation(fields: [scenarioId], references: [id], onDelete: NoAction)
+
+  @@index([transcriptSessionId])
+  @@index([scenarioId])
+  @@index([createdAt])
+}
+
+model RolePlayAttempt {
+  id                String   @id @default(cuid())
+  userId            String
+  rolePlayId        String
+  completedAttempts Int      @default(0)
+  lastCompletedAt   DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  rolePlay RolePlay @relation(fields: [rolePlayId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, rolePlayId])
+  @@index([userId])
+  @@index([rolePlayId])
+}

@@ -1,6 +1,8 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { Prisma } from "@prisma/client";
+import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
 import type {
   SaveTranscriptSessionInput,
   SavedTranscriptSession,
@@ -29,8 +31,6 @@ function buildTranscriptSessionId(scenarioId: string) {
 export async function saveTranscriptSession(
   input: SaveTranscriptSessionInput,
 ): Promise<SavedTranscriptSession> {
-  await ensureTranscriptsDir();
-
   const session: SavedTranscriptSession = {
     id: buildTranscriptSessionId(input.scenarioId),
     scenarioId: input.scenarioId,
@@ -41,7 +41,23 @@ export async function saveTranscriptSession(
     transcript: input.transcript,
   };
 
-  // TODO: Replace local JSON file persistence with database storage.
+  if (isDatabaseConfigured()) {
+    await prisma.transcriptSession.create({
+      data: {
+        id: session.id,
+        scenarioId: session.scenarioId,
+        scenarioTitle: session.scenarioTitle,
+        status: session.status,
+        completedObjectives: session.completedObjectives as unknown as Prisma.InputJsonValue,
+        transcript: session.transcript as unknown as Prisma.InputJsonValue,
+        createdAt: new Date(session.createdAt),
+      },
+    });
+
+    return session;
+  }
+
+  await ensureTranscriptsDir();
   await writeFile(transcriptFilePath(session.id), JSON.stringify(session, null, 2), "utf8");
   return session;
 }
@@ -49,6 +65,26 @@ export async function saveTranscriptSession(
 export async function getTranscriptSessionById(
   transcriptSessionId: string,
 ): Promise<SavedTranscriptSession | null> {
+  if (isDatabaseConfigured()) {
+    const session = await prisma.transcriptSession.findUnique({
+      where: { id: transcriptSessionId },
+    });
+
+    if (!session) {
+      return null;
+    }
+
+    return {
+      id: session.id,
+      scenarioId: session.scenarioId,
+      scenarioTitle: session.scenarioTitle,
+      status: session.status as SavedTranscriptSession["status"],
+      createdAt: session.createdAt.toISOString(),
+      completedObjectives: session.completedObjectives as SavedTranscriptSession["completedObjectives"],
+      transcript: session.transcript as SavedTranscriptSession["transcript"],
+    };
+  }
+
   try {
     const payload = await readFile(transcriptFilePath(transcriptSessionId), "utf8");
     return JSON.parse(payload) as SavedTranscriptSession;
@@ -60,6 +96,23 @@ export async function getTranscriptSessionById(
 export async function listTranscriptSessionsByScenario(
   scenarioId: string,
 ): Promise<SavedTranscriptSession[]> {
+  if (isDatabaseConfigured()) {
+    const sessions = await prisma.transcriptSession.findMany({
+      where: { scenarioId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return sessions.map((session) => ({
+      id: session.id,
+      scenarioId: session.scenarioId,
+      scenarioTitle: session.scenarioTitle,
+      status: session.status as SavedTranscriptSession["status"],
+      createdAt: session.createdAt.toISOString(),
+      completedObjectives: session.completedObjectives as SavedTranscriptSession["completedObjectives"],
+      transcript: session.transcript as SavedTranscriptSession["transcript"],
+    }));
+  }
+
   await ensureTranscriptsDir();
   const files = await readdir(transcriptsDir);
 
@@ -82,4 +135,3 @@ export async function listTranscriptSessionsByScenario(
     .filter((session) => session.scenarioId === scenarioId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
-

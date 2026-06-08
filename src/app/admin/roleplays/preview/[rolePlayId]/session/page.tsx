@@ -18,6 +18,11 @@ import {
 import type { AuthSessionUser } from "@/src/lib/auth/session";
 import type { Objective, TranscriptEntry } from "@/src/lib/objectives/types";
 import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import {
+  completeRolePlayAttempt,
+  fetchRolePlayAttemptStatus,
+  type RolePlayAttemptStatus,
+} from "@/src/lib/roleplays/attempts";
 import { fetchRolePlayConfig } from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
@@ -199,7 +204,9 @@ export default function RolePlayPreviewSessionPage() {
     "idle",
   );
   const [assessmentError, setAssessmentError] = useState<string | null>(null);
+  const [attemptStatus, setAttemptStatus] = useState<RolePlayAttemptStatus | null>(null);
   const startAttemptedRef = useRef(false);
+  const attemptRecordedRef = useRef(false);
   const agentIdRef = useRef<string | null>(null);
   const transcriptContextRef = useRef<{ traineeUid?: string; agentUid?: string }>({});
   const rtcClientRef = useRef<IAgoraRTCClient | null>(null);
@@ -279,6 +286,21 @@ export default function RolePlayPreviewSessionPage() {
     }
 
     setAccessDenied(!canUserAccessRolePlay(sessionUser, config));
+    if (sessionUser.role === "trainee") {
+      let active = true;
+      setAttemptStatus(null);
+      void fetchRolePlayAttemptStatus(sessionUser.id, config.id).then((nextAttemptStatus) => {
+        if (active) {
+          setAttemptStatus(nextAttemptStatus);
+        }
+      });
+      return () => {
+        active = false;
+      };
+    }
+
+    setAttemptStatus(null);
+    return undefined;
   }, [config, sessionUser]);
 
   useEffect(() => {
@@ -421,6 +443,14 @@ export default function RolePlayPreviewSessionPage() {
 
   async function startVoiceRolePlay(activeConfig: RolePlayConfig) {
     if (isStarting || callStatus === "In Call") return;
+    if (isTrainee && !attemptStatus) {
+      setErrorMessage("Checking attempt eligibility. Please try again in a moment.");
+      return;
+    }
+    if (isTrainee && attemptStatus?.locked) {
+      setErrorMessage("This roleplay is locked because both trainee attempts have been used.");
+      return;
+    }
 
     setIsStarting(true);
     setErrorMessage(null);
@@ -428,7 +458,13 @@ export default function RolePlayPreviewSessionPage() {
     setSimulationState("preparing");
     setSessionEnded(false);
     setIsPushToTalkActive(false);
+    setElapsedSeconds(0);
     setNormalizedTranscript([]);
+    setTranscriptSessionId(null);
+    setAssessmentId(null);
+    setAssessmentStatus("idle");
+    setAssessmentError(null);
+    attemptRecordedRef.current = false;
     resetLearnerGoals(activeConfig);
     transcriptChunkCacheRef.current.clear();
     transcriptItemMapRef.current.clear();
@@ -693,6 +729,10 @@ export default function RolePlayPreviewSessionPage() {
     }
 
     await cleanupVoiceRolePlay(true);
+    if (isTrainee && config && sessionUser && !attemptRecordedRef.current) {
+      attemptRecordedRef.current = true;
+      setAttemptStatus(await completeRolePlayAttempt(sessionUser.id, config.id));
+    }
     setCallStatus("Ended");
     setSimulationState("finished");
     setSessionEnded(true);
@@ -718,9 +758,13 @@ export default function RolePlayPreviewSessionPage() {
 
   useEffect(() => {
     if (!config || !sessionUser || accessDenied || startAttemptedRef.current) return;
+    if (sessionUser.role === "trainee") {
+      if (!attemptStatus) return;
+      if (attemptStatus.locked) return;
+    }
     startAttemptedRef.current = true;
     void startVoiceRolePlay(config);
-  }, [accessDenied, config, sessionUser]);
+  }, [accessDenied, attemptStatus, config, sessionUser]);
 
   useEffect(() => {
     return () => {
@@ -773,6 +817,42 @@ export default function RolePlayPreviewSessionPage() {
     );
   }
 
+  if (isTrainee && attemptStatus?.locked && simulationState !== "finished") {
+    return (
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8 text-slate-950">
+        <div className="mx-auto max-w-2xl rounded-3xl border border-blue-100 bg-white p-8 text-center shadow-soft">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-slate-100 text-2xl font-semibold text-slate-500">
+            !
+          </div>
+          <p className="mt-5 text-xs uppercase tracking-[0.28em] text-primary">
+            Attempts Used
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+            This roleplay is locked
+          </h1>
+          <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-slate-600">
+            You completed this simulation twice. The retake window is now closed, and your latest
+            final assessment is available from Assessment Results.
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <Link
+              href="/assessment"
+              className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+            >
+              View Assessment Results
+            </Link>
+            <Link
+              href="/courses"
+              className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+            >
+              Return to Courses
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] text-slate-950">
       {simulationState === "finished" && (
@@ -800,6 +880,14 @@ export default function RolePlayPreviewSessionPage() {
                 {learnerGoals.length}
               </span>{" "}
               total goals reviewed as guidance.
+              {isTrainee && attemptStatus && (
+                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+                  Attempt {attemptStatus.completedAttempts} of {attemptStatus.maxAttempts}
+                  {attemptStatus.remainingAttempts > 0
+                    ? ` · ${attemptStatus.remainingAttempts} retake remaining`
+                    : " · Final attempt used"}
+                </p>
+              )}
             </div>
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
               {assessmentStatus === "ready" && assessmentId
@@ -825,13 +913,32 @@ export default function RolePlayPreviewSessionPage() {
                 </Link>
               )}
               {isTrainee ? (
-                <button
-                  type="button"
-                  onClick={() => router.push("/courses")}
-                  className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
-                >
-                  Return to Courses
-                </button>
+                <>
+                  {attemptStatus && attemptStatus.remainingAttempts > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!config) return;
+                        setSimulationState("preparing");
+                        setCallStatus("Preparing");
+                        setSessionEnded(false);
+                        setIsEnding(false);
+                        startAttemptedRef.current = true;
+                        void startVoiceRolePlay(config);
+                      }}
+                      className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+                    >
+                      Retake Role Play
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => router.push("/courses")}
+                    className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                  >
+                    Return to Courses
+                  </button>
+                </>
               ) : (
                 <>
                   <Link

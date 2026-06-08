@@ -5,6 +5,10 @@ import { useEffect, useState } from "react";
 
 import type { AuthSessionUser } from "@/src/lib/auth/session";
 import { visibleRoleplaysForUser } from "@/src/lib/roleplays/access";
+import {
+  fetchRolePlayAttemptStatus,
+  type RolePlayAttemptStatus,
+} from "@/src/lib/roleplays/attempts";
 import { fetchRolePlayConfigs } from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
@@ -16,6 +20,9 @@ export function PublishedRoleplayCourses({
   const [roleplays, setRoleplays] = useState<RolePlayConfig[]>([]);
   const [user, setUser] = useState<AuthSessionUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [attemptsByRolePlayId, setAttemptsByRolePlayId] = useState<
+    Record<string, RolePlayAttemptStatus>
+  >({});
 
   useEffect(() => {
     void (async () => {
@@ -32,12 +39,21 @@ export function PublishedRoleplayCourses({
         setUser(nextUser);
 
         if (nextUser) {
-          setRoleplays(
-            visibleRoleplaysForUser(
-              nextUser,
-              (await fetchRolePlayConfigs()).filter((roleplay) => roleplay.status === "published"),
-            ),
+          const visibleRoleplays = visibleRoleplaysForUser(
+            nextUser,
+            (await fetchRolePlayConfigs()).filter((roleplay) => roleplay.status === "published"),
           );
+          setRoleplays(visibleRoleplays);
+
+          if (nextUser.role === "trainee") {
+            const attemptEntries = await Promise.all(
+              visibleRoleplays.map(async (roleplay) => [
+                roleplay.id,
+                await fetchRolePlayAttemptStatus(nextUser.id, roleplay.id),
+              ] as const),
+            );
+            setAttemptsByRolePlayId(Object.fromEntries(attemptEntries));
+          }
         }
       } finally {
         setIsLoading(false);
@@ -82,39 +98,73 @@ export function PublishedRoleplayCourses({
         </h2>
       </div>
       <div className="grid gap-6 xl:grid-cols-3">
-        {roleplays.map((roleplay) => (
-          <article
-            key={roleplay.id}
-            className="rounded-3xl border border-blue-100 bg-white p-5 shadow-soft"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-950">
-                  {roleplay.settings.meetingTitle}
-                </h3>
-                <p className="mt-1 text-sm font-medium text-blue-700">
-                  {roleplay.character.name} · {roleplay.character.role}
+        {roleplays.map((roleplay) => {
+            const attemptStatus =
+              user?.role === "trainee" ? attemptsByRolePlayId[roleplay.id] : null;
+            const actionLabel =
+              attemptStatus?.locked
+                ? "Attempts Used"
+                : attemptStatus && attemptStatus.completedAttempts > 0
+                  ? "Retake Role Play"
+                  : "Start Role Play";
+
+            return (
+              <article
+                key={roleplay.id}
+                className="rounded-3xl border border-blue-100 bg-white p-5 shadow-soft"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-950">
+                      {roleplay.settings.meetingTitle}
+                    </h3>
+                    <p className="mt-1 text-sm font-medium text-blue-700">
+                      {roleplay.character.name} · {roleplay.character.role}
+                    </p>
+                  </div>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${
+                      attemptStatus?.locked
+                        ? "bg-slate-100 text-slate-600 ring-slate-200"
+                        : "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                    }`}
+                  >
+                    {attemptStatus?.locked ? "Locked" : "Published"}
+                  </span>
+                </div>
+                <p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">
+                  {roleplay.plan.scenario}
                 </p>
-              </div>
-              <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                Published
-              </span>
-            </div>
-            <p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">
-              {roleplay.plan.scenario}
-            </p>
-            <div className="mt-5 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-              <span>{roleplay.settings.durationMinutes} min</span>
-              <span>{roleplay.settings.learnerGoals.length} goals</span>
-            </div>
-            <Link
-              href={`/admin/roleplays/preview/${roleplay.id}/session`}
-              className="mt-5 inline-flex w-full items-center justify-center rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
-            >
-              Start Role Play
-            </Link>
-          </article>
-        ))}
+                <div className="mt-5 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  <span>{roleplay.settings.durationMinutes} min</span>
+                  <span>{roleplay.settings.learnerGoals.length} goals</span>
+                </div>
+                {attemptStatus && (
+                  <p className="mt-3 rounded-2xl bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
+                    {attemptStatus.locked
+                      ? "Both attempts completed"
+                      : `${attemptStatus.remainingAttempts} of ${attemptStatus.maxAttempts} attempts remaining`}
+                  </p>
+                )}
+                {attemptStatus?.locked ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="mt-5 inline-flex w-full cursor-not-allowed items-center justify-center rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-500"
+                  >
+                    {actionLabel}
+                  </button>
+                ) : (
+                  <Link
+                    href={`/admin/roleplays/preview/${roleplay.id}/session`}
+                    className="mt-5 inline-flex w-full items-center justify-center rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                  >
+                    {actionLabel}
+                  </Link>
+                )}
+              </article>
+            );
+          })}
       </div>
     </section>
   );

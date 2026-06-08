@@ -1,6 +1,8 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { Prisma } from "@prisma/client";
+import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
 import type { RolePlayConfig, RolePlayStatus } from "@/src/lib/roleplays/types";
 
 const roleplaysDir = path.join(process.cwd(), "data", "roleplays");
@@ -14,13 +16,60 @@ async function ensureRoleplaysDir() {
 }
 
 export async function saveRolePlayConfig(config: RolePlayConfig) {
+  const now = new Date().toISOString();
+  const nextConfig: RolePlayConfig = {
+    ...config,
+    createdAt: config.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  if (isDatabaseConfigured()) {
+    const assignedTraineeIds = (nextConfig.settings.assignedTraineeIds ??
+      []) as Prisma.InputJsonValue;
+    const configPayload = nextConfig as unknown as Prisma.InputJsonValue;
+
+    await prisma.rolePlay.upsert({
+      where: { id: nextConfig.id },
+      create: {
+        id: nextConfig.id,
+        status: nextConfig.status,
+        meetingTitle: nextConfig.settings.meetingTitle,
+        characterName: nextConfig.character.name,
+        characterRole: nextConfig.character.role,
+        durationMinutes: nextConfig.settings.durationMinutes,
+        assignedTraineeIds,
+        config: configPayload,
+        createdAt: new Date(nextConfig.createdAt ?? now),
+        updatedAt: new Date(nextConfig.updatedAt ?? now),
+      },
+      update: {
+        status: nextConfig.status,
+        meetingTitle: nextConfig.settings.meetingTitle,
+        characterName: nextConfig.character.name,
+        characterRole: nextConfig.character.role,
+        durationMinutes: nextConfig.settings.durationMinutes,
+        assignedTraineeIds,
+        config: configPayload,
+      },
+    });
+
+    return nextConfig;
+  }
+
   await ensureRoleplaysDir();
-  // TODO: Replace local JSON file persistence with database storage for deployed production.
-  await writeFile(roleplayFilePath(config.id), JSON.stringify(config, null, 2), "utf8");
-  return config;
+  await writeFile(roleplayFilePath(nextConfig.id), JSON.stringify(nextConfig, null, 2), "utf8");
+  return nextConfig;
 }
 
 export async function getRolePlayConfigById(rolePlayId: string) {
+  if (isDatabaseConfigured()) {
+    const roleplay = await prisma.rolePlay.findUnique({
+      where: { id: rolePlayId },
+    });
+
+    return roleplay?.config as RolePlayConfig | null;
+  }
+
   try {
     const payload = await readFile(roleplayFilePath(rolePlayId), "utf8");
     return JSON.parse(payload) as RolePlayConfig;
@@ -30,6 +79,14 @@ export async function getRolePlayConfigById(rolePlayId: string) {
 }
 
 export async function listRolePlayConfigs() {
+  if (isDatabaseConfigured()) {
+    const roleplays = await prisma.rolePlay.findMany({
+      orderBy: { updatedAt: "desc" },
+    });
+
+    return roleplays.map((roleplay) => roleplay.config as RolePlayConfig);
+  }
+
   await ensureRoleplaysDir();
   const files = await readdir(roleplaysDir);
 
@@ -70,6 +127,17 @@ export async function updateRolePlayStatus(rolePlayId: string, status: RolePlayS
 }
 
 export async function deleteRolePlayConfig(rolePlayId: string) {
+  if (isDatabaseConfigured()) {
+    try {
+      await prisma.rolePlay.delete({
+        where: { id: rolePlayId },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   try {
     await unlink(roleplayFilePath(rolePlayId));
     return true;
@@ -77,4 +145,3 @@ export async function deleteRolePlayConfig(rolePlayId: string) {
     return false;
   }
 }
-

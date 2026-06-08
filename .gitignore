@@ -6,3 +6,5 @@ node_modules/
 .DS_Store
 *.tsbuildinfo
 data/transcripts/
+data/assessments/
+data/roleplays/
