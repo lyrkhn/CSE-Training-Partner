@@ -39,6 +39,8 @@ const defaultObjectives: Objective[] = [
 
 const steps = ["Plan Role Play", "AI Character Customization", "Role Play Settings"];
 
+type BuilderAction = "draft" | "publish" | "preview";
+
 type AssignableTrainee = {
   id: string;
   email: string;
@@ -89,6 +91,22 @@ export function RolePlayBuilder({
   const [trainees, setTrainees] = useState<AssignableTrainee[]>([]);
   const [traineeLoadError, setTraineeLoadError] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
+  const [activeBuilderAction, setActiveBuilderAction] = useState<BuilderAction | null>(null);
+  const [actionProgress, setActionProgress] = useState(0);
+
+  useEffect(() => {
+    if (!activeBuilderAction) {
+      setActionProgress(0);
+      return;
+    }
+
+    setActionProgress(12);
+    const interval = window.setInterval(() => {
+      setActionProgress((current) => Math.min(92, current + Math.max(2, (100 - current) * 0.16)));
+    }, 180);
+
+    return () => window.clearInterval(interval);
+  }, [activeBuilderAction]);
 
   useEffect(() => {
     void (async () => {
@@ -209,19 +227,44 @@ export function RolePlayBuilder({
     };
   }
 
-  async function save(status: RolePlayStatus) {
+  function completeBuilderAction(message: string) {
+    setActionProgress(100);
+    setDraftMessage(message);
+    window.setTimeout(() => {
+      setActiveBuilderAction(null);
+    }, 650);
+  }
+
+  async function save(
+    status: RolePlayStatus,
+    action: BuilderAction = status === "published" ? "publish" : "draft",
+  ) {
+    setActiveBuilderAction(action);
+    setDraftMessage(null);
     const config = buildRolePlayConfig(status);
-    saveStoredRolePlayConfig(config);
-    const saved = await persistRolePlayConfig(config);
-    setCurrentRolePlayId(saved.id);
-    setCurrentStatus(saved.status);
-    setCreatedAt(saved.createdAt ?? null);
-    setDraftMessage(status === "published" ? "Role play published." : "Draft saved.");
-    return saved;
+    try {
+      saveStoredRolePlayConfig(config);
+      const saved = await persistRolePlayConfig(config);
+      setCurrentRolePlayId(saved.id);
+      setCurrentStatus(saved.status);
+      setCreatedAt(saved.createdAt ?? null);
+      completeBuilderAction(
+        action === "preview"
+          ? "Preview ready."
+          : status === "published"
+            ? "Role play published."
+            : "Draft saved.",
+      );
+      return saved;
+    } catch (error) {
+      setDraftMessage(error instanceof Error ? error.message : "Unable to save role play.");
+      setActiveBuilderAction(null);
+      throw error;
+    }
   }
 
   async function previewRolePlay() {
-    const config = await save(currentStatus);
+    const config = await save(currentStatus, "preview");
     setPreviewConfig(config);
     router.push(`/course-builder?preview=${config.id}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -266,6 +309,16 @@ export function RolePlayBuilder({
   }
 
   const progressPercent = Math.round(((step + 1) / steps.length) * 100);
+  const isFinalStep = step === steps.length - 1;
+  const isBuilderActionRunning = Boolean(activeBuilderAction);
+  const activeBuilderActionLabel =
+    activeBuilderAction === "draft"
+      ? "Saving draft"
+      : activeBuilderAction === "publish"
+        ? "Publishing role play"
+        : activeBuilderAction === "preview"
+          ? "Preparing preview"
+          : "";
 
   if (isLoadingPreviewConfig) {
     return (
@@ -754,33 +807,87 @@ export function RolePlayBuilder({
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-            {draftMessage && (
+            {isBuilderActionRunning ? (
+              <div className="min-w-64 rounded-2xl border border-blue-100 bg-blue-50/80 px-4 py-3 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="relative h-10 w-10 shrink-0">
+                    <svg className="h-10 w-10 -rotate-90" viewBox="0 0 40 40" aria-hidden="true">
+                      <circle
+                        cx="20"
+                        cy="20"
+                        r="16"
+                        fill="none"
+                        stroke="rgb(219 234 254)"
+                        strokeWidth="4"
+                      />
+                      <circle
+                        cx="20"
+                        cy="20"
+                        r="16"
+                        fill="none"
+                        stroke="rgb(37 99 235)"
+                        strokeLinecap="round"
+                        strokeWidth="4"
+                        strokeDasharray={`${2 * Math.PI * 16}`}
+                        strokeDashoffset={`${2 * Math.PI * 16 * (1 - actionProgress / 100)}`}
+                        className="transition-all duration-200 ease-out"
+                      />
+                    </svg>
+                    <span className="absolute inset-0 grid place-items-center text-[10px] font-bold text-blue-700">
+                      {Math.round(actionProgress)}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-950">
+                      {activeBuilderActionLabel}
+                    </p>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-200 ease-out"
+                        style={{ width: `${actionProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : draftMessage ? (
               <p className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700">
                 {draftMessage}
               </p>
-            )}
+            ) : !isFinalStep ? (
+              <p className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-500">
+                Publish and Preview/Test unlock in Role Play Settings.
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2 sm:justify-end">
               <button
                 type="button"
                 onClick={() => void save("draft")}
-                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
+                disabled={isBuilderActionRunning}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Save Draft
               </button>
-              <button
-                type="button"
-                onClick={() => void save("published")}
-                className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
-              >
-                Publish
-              </button>
-              <button
-                type="button"
-                onClick={() => void previewRolePlay()}
-                className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
-              >
-                Preview/Test
-              </button>
+              {isFinalStep && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void save("published")}
+                    disabled={isBuilderActionRunning}
+                    className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Publish
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void previewRolePlay()}
+                    disabled={isBuilderActionRunning}
+                    className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Preview/Test
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
