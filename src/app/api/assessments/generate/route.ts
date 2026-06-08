@@ -92,29 +92,39 @@ function asTranscriptEntries(value: unknown): TranscriptEntry[] {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as GenerateAssessmentBody;
-  const input: GenerateAssessmentInput = {
-    transcriptSessionId: asString(body.transcriptSessionId),
-    scenarioId: asString(body.scenarioId),
-    scenarioTitle: asString(body.scenarioTitle),
-    learnerRole: asString(body.learnerRole) || undefined,
-    objectives: asObjectives(body.objectives),
-    transcript: asTranscriptEntries(body.transcript),
-  };
+  try {
+    const body = (await request.json().catch(() => ({}))) as GenerateAssessmentBody;
+    const input: GenerateAssessmentInput = {
+      transcriptSessionId: asString(body.transcriptSessionId),
+      scenarioId: asString(body.scenarioId),
+      scenarioTitle: asString(body.scenarioTitle),
+      learnerRole: asString(body.learnerRole) || undefined,
+      objectives: asObjectives(body.objectives),
+      transcript: asTranscriptEntries(body.transcript),
+    };
 
-  if (!input.transcriptSessionId || !input.scenarioId || !input.scenarioTitle) {
+    if (!input.transcriptSessionId || !input.scenarioId || !input.scenarioTitle) {
+      return NextResponse.json(
+        { error: "transcriptSessionId, scenarioId, and scenarioTitle are required." },
+        { status: 400 },
+      );
+    }
+
+    const assessment = await saveFinalAssessment(await generateFinalAssessment(input));
+
+    return NextResponse.json({
+      assessmentId: assessment.id,
+      createdAt: assessment.createdAt,
+      overallScore: assessment.overallScore,
+      outcome: assessment.outcome,
+    });
+  } catch (error) {
     return NextResponse.json(
-      { error: "transcriptSessionId, scenarioId, and scenarioTitle are required." },
-      { status: 400 },
+      {
+        error: "Unable to generate final assessment.",
+        details: error instanceof Error ? error.message : "Unknown final assessment error.",
+      },
+      { status: 500 },
     );
   }
-
-  const assessment = await saveFinalAssessment(await generateFinalAssessment(input));
-
-  return NextResponse.json({
-    assessmentId: assessment.id,
-    createdAt: assessment.createdAt,
-    overallScore: assessment.overallScore,
-    outcome: assessment.outcome,
-  });
 }

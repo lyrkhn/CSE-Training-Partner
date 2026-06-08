@@ -6,12 +6,22 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const { id } = await params;
-  const assessment = await getFinalAssessmentById(id);
+  try {
+    const { id } = await params;
+    const assessment = await getFinalAssessmentById(id);
 
-  if (!assessment) {
-    return NextResponse.json({ error: "Assessment not found." }, { status: 404 });
+    if (!assessment) {
+      return NextResponse.json({ error: "Assessment not found." }, { status: 404 });
+    }
+
+    return NextResponse.json(assessment);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: "Unable to load assessment.",
+        details: error instanceof Error ? error.message : "Unknown assessment error.",
+      },
+      { status: 500 },
+    );
   }
-
-  return NextResponse.json(assessment);
 }

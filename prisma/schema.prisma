@@ -34,8 +34,6 @@ model TranscriptSession {
   transcript          Json
   createdAt           DateTime @default(now())
 
-  assessments FinalAssessment[]
-
   @@index([scenarioId])
   @@index([createdAt])
 }
@@ -56,8 +54,6 @@ model FinalAssessment {
   dimensions          Json
   transcript          Json
   createdAt           DateTime @default(now())
-
-  transcriptSession TranscriptSession? @relation(fields: [transcriptSessionId], references: [id], onDelete: NoAction)
 
   @@index([transcriptSessionId])
   @@index([scenarioId])
