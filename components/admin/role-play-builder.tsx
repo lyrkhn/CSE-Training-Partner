@@ -49,6 +49,10 @@ type AssignableTrainee = {
   role: "trainee";
 };
 
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
 function createId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -104,8 +108,8 @@ export function RolePlayBuilder({
 
     setActionProgress(12);
     const interval = window.setInterval(() => {
-      setActionProgress((current) => Math.min(92, current + Math.max(2, (100 - current) * 0.16)));
-    }, 180);
+      setActionProgress((current) => Math.min(88, current + Math.max(1.5, (100 - current) * 0.1)));
+    }, 220);
 
     return () => window.clearInterval(interval);
   }, [activeBuilderAction]);
@@ -229,8 +233,9 @@ export function RolePlayBuilder({
     };
   }
 
-  function completeBuilderAction(message: string) {
+  async function completeBuilderAction(message: string) {
     setActionProgress(100);
+    await wait(500);
     setDraftMessage(message);
     setBuilderActionPhase("success");
   }
@@ -249,7 +254,7 @@ export function RolePlayBuilder({
       setCurrentRolePlayId(saved.id);
       setCurrentStatus(saved.status);
       setCreatedAt(saved.createdAt ?? null);
-      completeBuilderAction(
+      await completeBuilderAction(
         action === "preview"
           ? "Preview ready."
           : status === "published"
