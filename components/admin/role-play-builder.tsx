@@ -234,8 +234,10 @@ export function RolePlayBuilder({
   }
 
   async function completeBuilderAction(message: string) {
+    setActionProgress((current) => Math.max(current, 94));
+    await wait(350);
     setActionProgress(100);
-    await wait(500);
+    await wait(950);
     setDraftMessage(message);
     setBuilderActionPhase("success");
   }
@@ -353,7 +355,7 @@ export function RolePlayBuilder({
     const timeout = window.setTimeout(() => {
       router.push("/course-builder");
       setActiveBuilderAction(null);
-    }, 1100);
+    }, 1500);
 
     return () => window.clearTimeout(timeout);
   }, [activeBuilderAction, builderActionPhase, router]);
