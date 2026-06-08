@@ -1,13 +1,25 @@
 import { BellIcon, PanelLeftIcon, SearchIcon } from "@/components/ui/icons";
 import { MobileNav } from "@/components/layout/mobile-nav";
+import type { AuthSessionUser } from "@/src/lib/auth/session";
 
 export function Header({
+  user,
+  onLogout,
   isSidebarCollapsed,
   onToggleSidebar,
 }: {
+  user: AuthSessionUser;
+  onLogout: () => void;
   isSidebarCollapsed: boolean;
   onToggleSidebar: () => void;
 }) {
+  const roleLabel =
+    user.role === "root_admin"
+      ? "Root Admin"
+      : user.role === "course_admin"
+        ? "Course Admin"
+        : "Trainee";
+
   return (
     <header className="flex flex-col gap-4 border-b border-white/70 bg-white/70 px-4 py-4 backdrop-blur-xl sm:px-6 lg:px-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -41,12 +53,19 @@ export function Header({
             <BellIcon className="h-5 w-5" />
           </button>
           <div className="rounded-2xl border bg-white px-4 py-3 shadow-soft">
-            <p className="text-sm font-semibold text-slate-950">Maya Chen</p>
-            <p className="text-xs text-muted-foreground">Senior TSE trainee</p>
+            <p className="text-sm font-semibold text-slate-950">{user.name}</p>
+            <p className="text-xs text-muted-foreground">{roleLabel}</p>
           </div>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="rounded-2xl border bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-soft transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+          >
+            Logout
+          </button>
         </div>
       </div>
-      <MobileNav />
+      <MobileNav role={user.role} />
     </header>
   );
 }

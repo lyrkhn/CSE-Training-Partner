@@ -4,16 +4,26 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { navigationItems } from "@/lib/mock-data";
+import { canAccessNavItem } from "@/lib/mock-auth";
 import { cn } from "@/lib/utils";
+import type { MockRole } from "@/lib/types";
 
-export function MobileNav() {
+export function MobileNav({ role }: { role: MockRole }) {
   const pathname = usePathname();
+  const visibleNavigationItems = navigationItems.filter((item) => canAccessNavItem(role, item));
+  const visibleLinks = visibleNavigationItems.flatMap((item) => {
+    const children = item.children?.filter((child) => canAccessNavItem(role, child)) ?? [];
+    return children.length > 0 ? children : [item];
+  });
 
   return (
     <div className="flex gap-2 overflow-x-auto pb-1 lg:hidden">
-      {navigationItems.map((item) => {
+      {visibleLinks.map((item) => {
         const isActive =
-          item.href === "/" ? pathname === item.href : pathname.startsWith(item.href);
+          item.href === "/"
+            ? pathname === item.href
+            : pathname === item.href ||
+              (item.href !== "/course-builder" && pathname.startsWith(`${item.href}/`));
 
         return (
           <Link

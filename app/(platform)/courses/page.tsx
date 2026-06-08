@@ -1,11 +1,8 @@
-import { ScenarioCard } from "@/components/dashboard/scenario-card";
+import { PublishedRoleplayCourses } from "@/components/courses/published-roleplay-courses";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { listScenarios } from "@/lib/services/scenarios";
 
-export default async function CoursesPage() {
-  const scenarioList = await listScenarios();
-
+export default function CoursesPage() {
   return (
     <div className="space-y-6">
       <section className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
@@ -16,9 +13,8 @@ export default async function CoursesPage() {
           </CardHeader>
           <CardContent>
             <p className="max-w-3xl text-sm leading-7 text-muted-foreground">
-              Organize training into reusable simulation paths for troubleshooting, customer
-              empathy, and product guidance. Each course here is powered by mock data today and
-              can later be backed by scenario creation APIs.
+              Access is now driven by roleplay assignments from the Course Builder. Trainees only
+              see published courses assigned to their alpha account.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <Badge>Diagnostics</Badge>
@@ -45,11 +41,7 @@ export default async function CoursesPage() {
         </Card>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-3">
-        {scenarioList.map((scenario) => (
-          <ScenarioCard key={scenario.id} scenario={scenario} />
-        ))}
-      </section>
+      <PublishedRoleplayCourses emptyState />
     </div>
   );
 }

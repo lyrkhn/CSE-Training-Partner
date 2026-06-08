@@ -1,7 +1,11 @@
+export type MockRole = "root_admin" | "course_admin" | "trainee";
+
 export type NavItem = {
   title: string;
   href: string;
   icon: "dashboard" | "courses" | "simulation" | "assessment" | "profile" | "lab" | "builder";
+  allowedRoles?: MockRole[];
+  children?: Array<Omit<NavItem, "children" | "icon">>;
 };
 
 export type Scenario = {

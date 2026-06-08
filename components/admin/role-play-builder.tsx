@@ -1,10 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import type { Objective } from "@/src/lib/objectives/types";
 import { buildConvoAIConfig } from "@/src/lib/roleplays/buildConvoAIConfig";
+import {
+  fetchRolePlayConfig,
+  getStoredRolePlayConfig,
+  persistRolePlayConfig,
+  saveStoredRolePlayConfig,
+} from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig, RolePlayStatus } from "@/src/lib/roleplays/types";
 
 const evaluatorPromptDefault =
@@ -31,8 +37,14 @@ const defaultObjectives: Objective[] = [
   },
 ];
 
-const storagePrefix = "cse-roleplay-config";
 const steps = ["Plan Role Play", "AI Character Customization", "Role Play Settings"];
+
+type AssignableTrainee = {
+  id: string;
+  email: string;
+  name: string;
+  role: "trainee";
+};
 
 function createId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -41,9 +53,22 @@ function createId() {
   return `roleplay-${Date.now()}`;
 }
 
-export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
+export function RolePlayBuilder({
+  embedded = false,
+  rolePlayId,
+}: {
+  embedded?: boolean;
+  rolePlayId?: string;
+}) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [step, setStep] = useState(0);
+  const previewRolePlayId = searchParams.get("preview");
+  const [previewConfig, setPreviewConfig] = useState<RolePlayConfig | null>(null);
+  const [isLoadingPreviewConfig, setIsLoadingPreviewConfig] = useState(false);
+  const [currentRolePlayId, setCurrentRolePlayId] = useState<string | null>(rolePlayId ?? null);
+  const [currentStatus, setCurrentStatus] = useState<RolePlayStatus>("draft");
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [scenario, setScenario] = useState(
     "A customer is frustrated because their production video session had quality issues and their previous support case did not produce clear next steps.",
   );
@@ -60,7 +85,78 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
   const [durationMinutes, setDurationMinutes] = useState(8);
   const [learnerGoals, setLearnerGoals] = useState<Objective[]>(defaultObjectives);
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(evaluatorPromptDefault);
+  const [assignedTraineeIds, setAssignedTraineeIds] = useState<string[]>([]);
+  const [trainees, setTrainees] = useState<AssignableTrainee[]>([]);
+  const [traineeLoadError, setTraineeLoadError] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/users/trainees", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error(`Unable to load trainee users. HTTP ${response.status}.`);
+        }
+
+        const payload = (await response.json()) as { users?: AssignableTrainee[] };
+        setTrainees(Array.isArray(payload.users) ? payload.users : []);
+      } catch (error) {
+        setTraineeLoadError(
+          error instanceof Error ? error.message : "Unable to load trainee users.",
+        );
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!previewRolePlayId) {
+      setPreviewConfig(null);
+      setIsLoadingPreviewConfig(false);
+      return;
+    }
+
+    setIsLoadingPreviewConfig(true);
+    void fetchRolePlayConfig(previewRolePlayId)
+      .then((config) => setPreviewConfig(config))
+      .finally(() => setIsLoadingPreviewConfig(false));
+  }, [previewRolePlayId]);
+
+  useEffect(() => {
+    if (!rolePlayId) {
+      setCurrentRolePlayId(null);
+      setCurrentStatus("draft");
+      setCreatedAt(null);
+      return;
+    }
+
+    void (async () => {
+      const stored = (await fetchRolePlayConfig(rolePlayId)) ?? getStoredRolePlayConfig(rolePlayId);
+
+      if (!stored) {
+        setDraftMessage("Saved role play not found. You can create a new version here.");
+        return;
+      }
+
+      setCurrentRolePlayId(stored.id);
+      setCurrentStatus(stored.status);
+      setCreatedAt(stored.createdAt ?? null);
+      setScenario(stored.plan.scenario);
+      setLearnerRole(stored.plan.learnerRole);
+      setCharacterName(stored.character.name);
+      setCharacterRole(stored.character.role);
+      setPersonalityBackground(stored.character.personalityBackground);
+      setGreetingMessage(stored.character.greetingMessage);
+      setMeetingTitle(stored.settings.meetingTitle);
+      setDurationMinutes(stored.settings.durationMinutes);
+      setLearnerGoals(stored.settings.learnerGoals.length > 0 ? stored.settings.learnerGoals : defaultObjectives);
+      setEvaluatorPrompt(stored.settings.evaluatorPrompt);
+      setAssignedTraineeIds(stored.settings.assignedTraineeIds ?? []);
+      setDraftMessage(null);
+    })();
+  }, [rolePlayId]);
 
   const generated = useMemo(
     () =>
@@ -85,9 +181,13 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
   );
 
   function buildRolePlayConfig(status: RolePlayStatus): RolePlayConfig {
+    const now = new Date().toISOString();
+
     return {
-      id: createId(),
+      id: currentRolePlayId ?? createId(),
       status,
+      createdAt: createdAt ?? now,
+      updatedAt: now,
       plan: {
         scenario,
         learnerRole,
@@ -103,27 +203,33 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
         durationMinutes,
         learnerGoals,
         evaluatorPrompt,
+        assignedTraineeIds,
       },
       generated,
     };
   }
 
-  function persistConfig(config: RolePlayConfig) {
-    // TODO: Replace localStorage with server-side role play persistence.
-    localStorage.setItem(`${storagePrefix}:${config.id}`, JSON.stringify(config));
-    localStorage.setItem(`${storagePrefix}:latest`, config.id);
-  }
-
-  function save(status: RolePlayStatus) {
+  async function save(status: RolePlayStatus) {
     const config = buildRolePlayConfig(status);
-    persistConfig(config);
-    setDraftMessage(status === "published" ? "Role play published locally." : "Draft saved locally.");
-    return config;
+    saveStoredRolePlayConfig(config);
+    const saved = await persistRolePlayConfig(config);
+    setCurrentRolePlayId(saved.id);
+    setCurrentStatus(saved.status);
+    setCreatedAt(saved.createdAt ?? null);
+    setDraftMessage(status === "published" ? "Role play published." : "Draft saved.");
+    return saved;
   }
 
-  function previewRolePlay() {
-    const config = save("draft");
-    router.push(`/admin/roleplays/preview/${config.id}`);
+  async function previewRolePlay() {
+    const config = await save(currentStatus);
+    setPreviewConfig(config);
+    router.push(`/course-builder?preview=${config.id}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function startPreviewRolePlay(config: RolePlayConfig) {
+    saveStoredRolePlayConfig(config);
+    router.push(`/admin/roleplays/preview/${config.id}/session`);
   }
 
   function addObjective() {
@@ -150,7 +256,146 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
+  function toggleTraineeAssignment(traineeId: string, assigned: boolean) {
+    setAssignedTraineeIds((current) => {
+      if (assigned) {
+        return current.includes(traineeId) ? current : [...current, traineeId];
+      }
+      return current.filter((id) => id !== traineeId);
+    });
+  }
+
   const progressPercent = Math.round(((step + 1) / steps.length) * 100);
+
+  if (isLoadingPreviewConfig) {
+    return (
+      <section
+        id="course-builder"
+        className={
+          embedded
+            ? "rounded-3xl border border-blue-100 bg-white/90 p-6 shadow-soft"
+            : "min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8"
+        }
+      >
+        <div className={embedded ? "text-sm text-slate-500" : "mx-auto max-w-6xl text-sm text-slate-500"}>
+          Loading role play preview...
+        </div>
+      </section>
+    );
+  }
+
+  if (previewConfig) {
+    return (
+      <section
+        id="course-builder"
+        className={
+          embedded
+            ? "overflow-hidden rounded-3xl border border-blue-100 bg-white/90 p-5 shadow-soft sm:p-6"
+            : "min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8"
+        }
+      >
+        <div className={embedded ? "space-y-6" : "mx-auto max-w-6xl space-y-6"}>
+          <header className="overflow-hidden rounded-3xl border border-blue-100 bg-hero-grid p-6 shadow-soft">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-primary">Powered by AI</p>
+                <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
+                  {previewConfig.settings.meetingTitle}
+                </h1>
+                <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600">
+                  Learner-facing preview for a {previewConfig.settings.durationMinutes}-minute
+                  roleplay with {previewConfig.character.name}.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewConfig(null);
+                    router.push(`/course-builder/${previewConfig.id}/edit`);
+                  }}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-soft transition hover:border-blue-200 hover:bg-blue-50"
+                >
+                  Edit Builder
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startPreviewRolePlay(previewConfig)}
+                  className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                >
+                  Start Role Play
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+            <section className="space-y-5">
+              <div className="rounded-3xl border border-blue-100 bg-white p-6 shadow-soft">
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">Scenario Summary</p>
+                <p className="mt-3 text-sm leading-7 text-slate-600">
+                  {previewConfig.plan.scenario}
+                </p>
+              </div>
+
+              <div className="rounded-3xl border border-blue-100 bg-white p-6 shadow-soft">
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">AI Character</p>
+                <div className="mt-4 flex items-start gap-4">
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#dbeafe,#60a5fa)] text-2xl font-semibold text-white shadow-lg shadow-blue-500/20">
+                    {previewConfig.character.name.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-semibold text-slate-950">
+                      {previewConfig.character.name}
+                    </h2>
+                    <p className="text-sm font-medium text-blue-700">
+                      {previewConfig.character.role}
+                    </p>
+                    <p className="mt-3 text-sm leading-7 text-slate-600">
+                      {previewConfig.character.personalityBackground}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-blue-100 bg-white p-6 shadow-soft">
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">Learner Role</p>
+                <p className="mt-3 text-sm font-medium text-slate-700">
+                  {previewConfig.plan.learnerRole}
+                </p>
+              </div>
+            </section>
+
+            <aside className="rounded-3xl border border-blue-100 bg-white p-6 shadow-soft">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-primary">Meeting Goals</p>
+                  <h2 className="mt-2 text-lg font-semibold text-slate-950">
+                    What the learner should cover
+                  </h2>
+                </div>
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                  {previewConfig.settings.learnerGoals.length} goals
+                </span>
+              </div>
+              <div className="mt-5 space-y-3">
+                {previewConfig.settings.learnerGoals.map((goal) => (
+                  <div key={goal.id} className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-medium leading-6 text-slate-800">{goal.label}</p>
+                      <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-500">
+                        {goal.required ? "Required" : "Optional"}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </aside>
+          </main>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section
@@ -161,7 +406,7 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
           : "min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8"
       }
     >
-      <div className={embedded ? "space-y-6" : "mx-auto max-w-6xl space-y-6"}>
+      <div className={embedded ? "space-y-6 pb-40" : "mx-auto max-w-6xl space-y-6 pb-40"}>
         <header className="overflow-hidden rounded-3xl border border-blue-100 bg-hero-grid p-6 shadow-soft">
           <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div>
@@ -384,65 +629,61 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
                   ))}
                 </div>
 
-                <label className="block space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Evaluator Prompt</span>
-                  <textarea
-                    value={evaluatorPrompt}
-                    onChange={(event) => setEvaluatorPrompt(event.target.value)}
-                    rows={6}
-                    className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
-                  />
-                </label>
-              </div>
-            )}
+                <div className="space-y-3 rounded-2xl border border-blue-100 bg-white p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">User Access</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        Choose which trainee accounts can see and start this course after it is
+                        published.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100">
+                      {assignedTraineeIds.length} assigned
+                    </span>
+                  </div>
 
-            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-blue-100 pt-5">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setStep((current) => Math.max(0, current - 1))}
-                  disabled={step === 0}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:opacity-40"
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep((current) => Math.min(steps.length - 1, current + 1))}
-                  disabled={step === steps.length - 1}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:opacity-40"
-                >
-                  Next
-                </button>
+                  {traineeLoadError && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      {traineeLoadError}
+                    </div>
+                  )}
+
+                  {!traineeLoadError && trainees.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-blue-200 bg-blue-50/60 p-4 text-sm text-slate-600">
+                      No trainee users available yet. Add trainee accounts to the alpha auth
+                      configuration before assigning this course.
+                    </div>
+                  )}
+
+                  {trainees.length > 0 && (
+                    <div className="grid gap-2">
+                      {trainees.map((trainee) => (
+                        <label
+                          key={trainee.id}
+                          className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-3"
+                        >
+                          <span>
+                            <span className="block text-sm font-semibold text-slate-950">
+                              {trainee.name}
+                            </span>
+                            <span className="block text-xs text-slate-500">{trainee.email}</span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={assignedTraineeIds.includes(trainee.id)}
+                            onChange={(event) =>
+                              toggleTraineeAssignment(trainee.id, event.target.checked)
+                            }
+                            className="h-4 w-4"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
               </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => save("draft")}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50"
-                >
-                  Save Draft
-                </button>
-                <button
-                  type="button"
-                  onClick={() => save("published")}
-                  className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
-                >
-                  Publish
-                </button>
-                <button
-                  type="button"
-                  onClick={previewRolePlay}
-                  className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
-                >
-                  Preview/Test
-                </button>
-              </div>
-            </div>
-            {draftMessage && (
-              <p className="mt-3 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700">
-                {draftMessage}
-              </p>
             )}
           </section>
 
@@ -490,6 +731,59 @@ export function RolePlayBuilder({ embedded = false }: { embedded?: boolean }) {
             </div>
           </aside>
         </main>
+      </div>
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-blue-100 bg-white/95 px-4 py-3 shadow-[0_-20px_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl sm:px-6 lg:left-[var(--app-sidebar-width,0px)]">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setStep((current) => Math.max(0, current - 1))}
+              disabled={step === 0}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep((current) => Math.min(steps.length - 1, current + 1))}
+              disabled={step === steps.length - 1}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+            {draftMessage && (
+              <p className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700">
+                {draftMessage}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={() => void save("draft")}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50"
+              >
+                Save Draft
+              </button>
+              <button
+                type="button"
+                onClick={() => void save("published")}
+                className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+              >
+                Publish
+              </button>
+              <button
+                type="button"
+                onClick={() => void previewRolePlay()}
+                className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+              >
+                Preview/Test
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );

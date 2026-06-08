@@ -10,11 +10,24 @@ import type {
 export const navigationItems: NavItem[] = [
   { title: "Dashboard", href: "/", icon: "dashboard" },
   { title: "Simulation Courses", href: "/courses", icon: "courses" },
-  { title: "Simulation Session", href: "/simulation", icon: "simulation" },
+  { title: "Simulation Session", href: "/simulation", icon: "simulation", allowedRoles: ["trainee"] },
   {
     title: "Course Builder",
     href: "/course-builder",
     icon: "builder",
+    allowedRoles: ["root_admin", "course_admin"],
+    children: [
+      {
+        title: "Preview Created Courses",
+        href: "/course-builder",
+        allowedRoles: ["root_admin", "course_admin"],
+      },
+      {
+        title: "Role Play Builder",
+        href: "/course-builder/new",
+        allowedRoles: ["root_admin", "course_admin"],
+      },
+    ],
   },
   { title: "Assessment Results", href: "/assessment", icon: "assessment" },
   { title: "Profile", href: "/profile", icon: "profile" },

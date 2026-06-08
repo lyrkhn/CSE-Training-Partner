@@ -15,12 +15,14 @@ import {
   type ToolkitTranscriptItem,
   type ToolkitTranscriptMetadata,
 } from "@/src/lib/convoai/transcriptMapper";
-import type { MatchedObjective, Objective, TranscriptEntry } from "@/src/lib/objectives/types";
+import type { AuthSessionUser } from "@/src/lib/auth/session";
+import type { Objective, TranscriptEntry } from "@/src/lib/objectives/types";
+import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import { fetchRolePlayConfig } from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
-const storagePrefix = "cse-roleplay-config";
-
 type CallStatus = "Preparing" | "Connecting" | "In Call" | "Ended";
+type SimulationState = "preparing" | "in_call" | "ending" | "finished";
 
 type StartResponse = {
   agentId: string;
@@ -52,10 +54,6 @@ type DataStreamTranscriptMessage = {
   final?: boolean;
   turn_status?: number;
 };
-
-const objectiveTurnEndDelayMs = 1400;
-const sessionEvaluatorGuard =
-  "Evaluate only the learner/engineer's responses. Determine whether the latest engineer message satisfies any incomplete learner goals. Use recent engineer transcript only as context for the same learner turn. Do not evaluate customer_ai messages. Only mark a goal complete if the learner clearly covered it, even if the wording is not an exact match. Use exact evidence from the engineer response. Return strict JSON only.";
 
 function formatTime(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60)
@@ -95,12 +93,23 @@ function decodeUtf8(bytes: Uint8Array) {
   return new TextDecoder().decode(bytes);
 }
 
-function objectiveEvalEntryKey(entry: NormalizedTranscript) {
-  return `${entry.id}::${entry.timestamp}::${entry.text}`;
+function normalizeVolumeLevel(level: unknown) {
+  const rawLevel = Number(level);
+  if (!Number.isFinite(rawLevel)) {
+    return 0;
+  }
+
+  const normalized = rawLevel > 1 ? rawLevel / 100 : rawLevel;
+  return Math.max(0, Math.min(1, normalized));
 }
 
-function buildEvaluatorPrompt(prompt: string) {
-  return [prompt.trim(), sessionEvaluatorGuard].filter(Boolean).join("\n\n");
+function scaleVolumeForDisplay(level: number, noiseFloor = 0.22, gain = 1.45) {
+  const normalized = normalizeVolumeLevel(level);
+  if (normalized <= noiseFloor) {
+    return 0;
+  }
+
+  return Math.min(1, ((normalized - noiseFloor) / (1 - noiseFloor)) * gain);
 }
 
 function withCustomerPersonaGuard(config: RolePlayConfig) {
@@ -112,6 +121,12 @@ function withCustomerPersonaGuard(config: RolePlayConfig) {
     "Never speak as the engineer, coach, evaluator, instructor, or assistant.",
     "Do not give solutions as support staff. Respond only as the customer/persona reacting to the learner.",
     "Stay in first person and keep every reply consistent with the character background.",
+    "AGORA FEATURE CONTEXT GUARDRAIL:",
+    "Keep the conversation anchored to the Agora feature, customer issue, and learner goals configured for this scenario.",
+    "Do not introduce unrelated Agora products, SDKs, or technical capabilities unless the learner brings them up and they are connected to the customer's issue.",
+    "If the learner gives generic advice, ask how it applies to the specific Agora scenario or customer use case.",
+    "If the learner drifts away from the configured issue, redirect back to the customer's impact and the Agora feature involved.",
+    "Do not invent technical facts, API names, product limits, pricing, or behavior not grounded in the scenario.",
   ].join("\n\n");
 }
 
@@ -144,10 +159,10 @@ function fallbackConfig(rolePlayId: string): RolePlayConfig {
     },
     generated: {
       system_message:
-        "You are Morgan Lee, an enterprise customer escalation contact. You are the customer/persona in the role play, not the engineer. Stay in character, speak in first person, and do not act as coach, evaluator, assistant, or support engineer.",
+        "You are Morgan Lee, an enterprise customer escalation contact. You are the customer/persona in the role play, not the engineer. Stay in character, speak in first person, and do not act as coach, evaluator, assistant, or support engineer. Keep the conversation focused on the configured Agora customer issue and do not invent unrelated product behavior.",
       greeting_message: "Can we please get this issue moving today?",
       greeting_message_switch: "single_first",
-      delay_ms: 800,
+      delay_ms: 1200,
     },
   };
 }
@@ -157,52 +172,114 @@ export default function RolePlayPreviewSessionPage() {
   const params = useParams<{ rolePlayId: string }>();
   const rolePlayId = params.rolePlayId;
   const [config, setConfig] = useState<RolePlayConfig | null>(null);
+  const [sessionUser, setSessionUser] = useState<AuthSessionUser | null>(null);
+  const [accessDenied, setAccessDenied] = useState(false);
   const [guideOpen, setGuideOpen] = useState(true);
   const [captionsOpen, setCaptionsOpen] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [callStatus, setCallStatus] = useState<CallStatus>("Preparing");
+  const [simulationState, setSimulationState] = useState<SimulationState>("preparing");
   const [isStarting, setIsStarting] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
+  const [pushToTalkEnabled, setPushToTalkEnabled] = useState(true);
+  const [isPushToTalkActive, setIsPushToTalkActive] = useState(false);
+  const [aiVolumeLevel, setAiVolumeLevel] = useState(0);
+  const [traineeVolumeLevel, setTraineeVolumeLevel] = useState(0);
   const [connectionState, setConnectionState] = useState("DISCONNECTED");
   const [remoteAudioPublished, setRemoteAudioPublished] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [startResponse, setStartResponse] = useState<StartResponse | null>(null);
   const [normalizedTranscript, setNormalizedTranscript] = useState<NormalizedTranscript[]>([]);
   const [learnerGoals, setLearnerGoals] = useState<Objective[]>([]);
-  const [isEvaluatingObjectives, setIsEvaluatingObjectives] = useState(false);
-  const [objectiveEvalError, setObjectiveEvalError] = useState<string | null>(null);
-  const [objectiveEvalTick, setObjectiveEvalTick] = useState(0);
+  const [showEndCallConfirm, setShowEndCallConfirm] = useState(false);
+  const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null);
+  const [assessmentId, setAssessmentId] = useState<string | null>(null);
+  const [assessmentStatus, setAssessmentStatus] = useState<"idle" | "saving" | "ready" | "error">(
+    "idle",
+  );
+  const [assessmentError, setAssessmentError] = useState<string | null>(null);
   const startAttemptedRef = useRef(false);
   const agentIdRef = useRef<string | null>(null);
   const transcriptContextRef = useRef<{ traineeUid?: string; agentUid?: string }>({});
   const rtcClientRef = useRef<IAgoraRTCClient | null>(null);
   const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const remoteAudioTrackRef = useRef<IRemoteAudioTrack | null>(null);
+  const aiVolumeTargetRef = useRef(0);
+  const traineeVolumeTargetRef = useRef(0);
   const transcriptChunkCacheRef = useRef<
     Map<string, { parts: Map<number, string>; partSum: number }>
   >(new Map());
   const transcriptItemMapRef = useRef<Map<string, ToolkitTranscriptItem>>(new Map());
   const finalizedTranscriptKeysRef = useRef<Set<string>>(new Set());
-  const evaluatedEngineerEntryIdsRef = useRef<Set<string>>(new Set());
-  const objectiveEvalTimerRef = useRef<number | null>(null);
+  const pushToTalkEnabledRef = useRef(true);
+
+  const requiredGoals = learnerGoals.filter((goal) => goal.required);
+  const controlsLocked = simulationState === "ending" || simulationState === "finished";
+  const visualAiVolume = Math.min(1, aiVolumeLevel * 2.8);
+  const traineeFillLevel = isPushToTalkActive
+    ? scaleVolumeForDisplay(traineeVolumeLevel, 0.6, 1.9)
+    : 0;
+  const aiSpeaking = visualAiVolume > 0.04;
+  const traineeSpeaking = traineeFillLevel > 0.03;
+  const isTrainee = sessionUser?.role === "trainee";
+
+  useEffect(() => {
+    void (async () => {
+      const response = await fetch("/api/auth/session", {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        setAccessDenied(true);
+        return;
+      }
+
+      const payload = (await response.json()) as { user?: AuthSessionUser };
+      setSessionUser(payload.user ?? null);
+    })();
+  }, []);
+
+  useEffect(() => {
+    pushToTalkEnabledRef.current = pushToTalkEnabled;
+    if (!localAudioTrackRef.current) {
+      setIsPushToTalkActive(false);
+      return;
+    }
+
+    if (pushToTalkEnabled) {
+      void localAudioTrackRef.current.setMuted(true).catch(() => undefined);
+      setIsPushToTalkActive(false);
+      return;
+    }
+
+    void localAudioTrackRef.current.setMuted(false).catch(() => undefined);
+    setIsPushToTalkActive(false);
+  }, [pushToTalkEnabled]);
 
   useEffect(() => {
     if (!rolePlayId) return;
-    // TODO: Replace localStorage lookup with persisted role play config fetch.
-    const stored = localStorage.getItem(`${storagePrefix}:${rolePlayId}`);
-    const nextConfig = stored ? (JSON.parse(stored) as RolePlayConfig) : fallbackConfig(rolePlayId);
-    setConfig(nextConfig);
-    setLearnerGoals(
-      nextConfig.settings.learnerGoals.map((goal) => ({
-        ...goal,
-        completed: false,
-        completedAt: undefined,
-        confidence: undefined,
-        evidence: undefined,
-      })),
-    );
+    void (async () => {
+      const nextConfig = (await fetchRolePlayConfig(rolePlayId)) ?? fallbackConfig(rolePlayId);
+      setConfig(nextConfig);
+      setLearnerGoals(
+        nextConfig.settings.learnerGoals.map((goal) => ({
+          ...goal,
+          completed: false,
+          completedAt: undefined,
+          confidence: undefined,
+          evidence: undefined,
+        })),
+      );
+    })();
   }, [rolePlayId]);
+
+  useEffect(() => {
+    if (!config || !sessionUser) {
+      return;
+    }
+
+    setAccessDenied(!canUserAccessRolePlay(sessionUser, config));
+  }, [config, sessionUser]);
 
   useEffect(() => {
     if (sessionEnded) return;
@@ -211,6 +288,36 @@ export default function RolePlayPreviewSessionPage() {
     }, 1000);
     return () => window.clearInterval(interval);
   }, [sessionEnded]);
+
+  useEffect(() => {
+    if (callStatus !== "In Call" || simulationState !== "in_call") {
+      aiVolumeTargetRef.current = 0;
+      traineeVolumeTargetRef.current = 0;
+      setAiVolumeLevel(0);
+      setTraineeVolumeLevel(0);
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      const trackAiVolume = normalizeVolumeLevel(remoteAudioTrackRef.current?.getVolumeLevel() ?? 0);
+      const isLocalMicLive = !pushToTalkEnabledRef.current || isPushToTalkActive;
+      const trackTraineeVolume = isLocalMicLive
+        ? normalizeVolumeLevel(localAudioTrackRef.current?.getVolumeLevel() ?? 0)
+        : 0;
+      const nextAiVolume = Math.max(trackAiVolume, aiVolumeTargetRef.current);
+      const nextTraineeVolume = isLocalMicLive
+        ? Math.max(trackTraineeVolume, traineeVolumeTargetRef.current)
+        : 0;
+
+      aiVolumeTargetRef.current *= 0.82;
+      traineeVolumeTargetRef.current = isLocalMicLive ? traineeVolumeTargetRef.current * 0.78 : 0;
+
+      setAiVolumeLevel((current) => current * 0.72 + nextAiVolume * 0.28);
+      setTraineeVolumeLevel((current) => current * 0.68 + nextTraineeVolume * 0.32);
+    }, 80);
+
+    return () => window.clearInterval(interval);
+  }, [callStatus, isPushToTalkActive, simulationState]);
 
   function upsertNormalizedTranscript(entry: ToolkitTranscriptItem) {
     const key = `${entry.uid}-${entry.stream_id}-${entry.turn_id}-${entry.metadata?.object ?? "unknown"}`;
@@ -239,23 +346,6 @@ export default function RolePlayPreviewSessionPage() {
     setNormalizedTranscript(mapped.sort((a, b) => a.timestamp.localeCompare(b.timestamp)));
   }
 
-  function scheduleObjectiveEvalRetry(waitMs: number) {
-    if (objectiveEvalTimerRef.current) {
-      window.clearTimeout(objectiveEvalTimerRef.current);
-      objectiveEvalTimerRef.current = null;
-    }
-    objectiveEvalTimerRef.current = window.setTimeout(() => {
-      setObjectiveEvalTick((current) => current + 1);
-    }, Math.max(100, waitMs));
-  }
-
-  function clearObjectiveEvalRetry() {
-    if (objectiveEvalTimerRef.current) {
-      window.clearTimeout(objectiveEvalTimerRef.current);
-      objectiveEvalTimerRef.current = null;
-    }
-  }
-
   function resetLearnerGoals(activeConfig: RolePlayConfig) {
     setLearnerGoals(
       activeConfig.settings.learnerGoals.map((goal) => ({
@@ -265,30 +355,6 @@ export default function RolePlayPreviewSessionPage() {
         confidence: undefined,
         evidence: undefined,
       })),
-    );
-  }
-
-  function mergeObjectiveMatches(matches: MatchedObjective[]) {
-    if (matches.length === 0) {
-      return;
-    }
-
-    const matchedById = new Map(matches.map((match) => [match.id, match]));
-    setLearnerGoals((current) =>
-      current.map((goal) => {
-        const matched = matchedById.get(goal.id);
-        if (!matched) {
-          return goal;
-        }
-
-        return {
-          ...goal,
-          completed: true,
-          completedAt: goal.completedAt ?? new Date().toISOString(),
-          confidence: matched.confidence,
-          evidence: matched.evidence,
-        };
-      }),
     );
   }
 
@@ -359,15 +425,14 @@ export default function RolePlayPreviewSessionPage() {
     setIsStarting(true);
     setErrorMessage(null);
     setCallStatus("Connecting");
+    setSimulationState("preparing");
+    setSessionEnded(false);
+    setIsPushToTalkActive(false);
     setNormalizedTranscript([]);
     resetLearnerGoals(activeConfig);
-    setObjectiveEvalError(null);
-    setIsEvaluatingObjectives(false);
-    clearObjectiveEvalRetry();
     transcriptChunkCacheRef.current.clear();
     transcriptItemMapRef.current.clear();
     finalizedTranscriptKeysRef.current.clear();
-    evaluatedEngineerEntryIdsRef.current.clear();
     transcriptContextRef.current = {};
 
     try {
@@ -416,9 +481,26 @@ export default function RolePlayPreviewSessionPage() {
 
       const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
       rtcClientRef.current = client;
+      client.enableAudioVolumeIndicator();
 
       client.on("connection-state-change", (currentState) => {
         setConnectionState(currentState);
+      });
+
+      client.on("volume-indicator", (volumes) => {
+        volumes.forEach((volume) => {
+          const uid = String(volume.uid);
+          const normalizedLevel = normalizeVolumeLevel(volume.level);
+          if (uid === String(data.agentUid)) {
+            aiVolumeTargetRef.current = Math.max(aiVolumeTargetRef.current, normalizedLevel);
+          }
+          if (uid === String(data.traineeUid)) {
+            traineeVolumeTargetRef.current = Math.max(
+              traineeVolumeTargetRef.current,
+              normalizedLevel,
+            );
+          }
+        });
       });
 
       client.on("stream-message", (uid, payload) => {
@@ -453,10 +535,15 @@ export default function RolePlayPreviewSessionPage() {
       ]);
 
       localAudioTrackRef.current = microphoneTrack;
+      if (pushToTalkEnabledRef.current) {
+        await microphoneTrack.setMuted(true);
+      }
       await client.publish([microphoneTrack]);
       setCallStatus("In Call");
+      setSimulationState("in_call");
     } catch (error) {
       setCallStatus("Preparing");
+      setSimulationState("preparing");
       setErrorMessage(error instanceof Error ? error.message : "Unable to start role play.");
       await cleanupVoiceRolePlay(false);
     } finally {
@@ -465,178 +552,178 @@ export default function RolePlayPreviewSessionPage() {
   }
 
   async function cleanupVoiceRolePlay(callEndApi: boolean) {
-    if (localAudioTrackRef.current) {
-      localAudioTrackRef.current.stop();
-      localAudioTrackRef.current.close();
-      localAudioTrackRef.current = null;
-    }
+    setIsPushToTalkActive(false);
+    const cleanupTasks: Promise<unknown>[] = [];
 
     remoteAudioTrackRef.current = null;
+    aiVolumeTargetRef.current = 0;
+    traineeVolumeTargetRef.current = 0;
     setRemoteAudioPublished(false);
+    setAiVolumeLevel(0);
+    setTraineeVolumeLevel(0);
+
+    if (localAudioTrackRef.current) {
+      const localAudioTrack = localAudioTrackRef.current;
+      localAudioTrackRef.current = null;
+      cleanupTasks.push(
+        Promise.resolve().then(() => {
+          localAudioTrack.stop();
+          localAudioTrack.close();
+        }),
+      );
+    }
 
     if (rtcClientRef.current) {
-      await rtcClientRef.current.leave().catch(() => undefined);
-      rtcClientRef.current.removeAllListeners();
+      const rtcClient = rtcClientRef.current;
       rtcClientRef.current = null;
+      cleanupTasks.push(
+        rtcClient
+          .leave()
+          .catch(() => undefined)
+          .finally(() => {
+            rtcClient.removeAllListeners();
+          }),
+      );
       setConnectionState("DISCONNECTED");
     }
 
     transcriptChunkCacheRef.current.clear();
     transcriptItemMapRef.current.clear();
     finalizedTranscriptKeysRef.current.clear();
-    evaluatedEngineerEntryIdsRef.current.clear();
-    clearObjectiveEvalRetry();
 
     if (callEndApi && agentIdRef.current) {
-      await fetch("/api/convoai/end", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          agent_id: agentIdRef.current,
-        }),
-      }).catch(() => undefined);
+      const agentId = agentIdRef.current;
       agentIdRef.current = null;
+      cleanupTasks.push(
+        fetch("/api/convoai/end", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            agent_id: agentId,
+          }),
+        }).catch(() => undefined),
+      );
     }
+
+    await Promise.allSettled(cleanupTasks);
   }
 
   async function endVoiceRolePlay() {
     if (isEnding) return;
+    setShowEndCallConfirm(false);
     setIsEnding(true);
-    await cleanupVoiceRolePlay(true);
-    setCallStatus("Ended");
-    setSessionEnded(true);
-    setIsEnding(false);
-  }
+    setSimulationState("ending");
+    setAssessmentStatus("saving");
+    setAssessmentError(null);
 
-  useEffect(() => {
-    if (!config || callStatus !== "In Call" || isEvaluatingObjectives) {
-      clearObjectiveEvalRetry();
-      return;
-    }
-
-    const incompleteObjectives = learnerGoals.filter(
-      (goal) => !goal.completed && goal.label.trim(),
-    );
-    if (incompleteObjectives.length === 0) {
-      clearObjectiveEvalRetry();
-      return;
-    }
-
-    const pendingEngineerEntries = normalizedTranscript.filter(
-      (entry) =>
-        entry.speaker_type === "engineer" &&
-        !evaluatedEngineerEntryIdsRef.current.has(objectiveEvalEntryKey(entry)),
-    );
-    if (pendingEngineerEntries.length === 0) {
-      clearObjectiveEvalRetry();
-      return;
-    }
-
-    const latestEngineerEntry = pendingEngineerEntries[pendingEngineerEntries.length - 1];
-    const latestTranscriptEntry = normalizedTranscript[normalizedTranscript.length - 1];
-    const engineerTimestampMs = Date.parse(latestEngineerEntry.timestamp);
-    const latestTimestampMs = latestTranscriptEntry
-      ? Date.parse(latestTranscriptEntry.timestamp)
-      : Number.NaN;
-    const turnEndedByCustomerAi =
-      latestTranscriptEntry?.speaker_type === "customer_ai" &&
-      Number.isFinite(engineerTimestampMs) &&
-      Number.isFinite(latestTimestampMs) &&
-      latestTimestampMs >= engineerTimestampMs;
-    const silenceSinceEngineerMs = Number.isFinite(engineerTimestampMs)
-      ? Date.now() - engineerTimestampMs
-      : 0;
-    const turnEndedBySilence = silenceSinceEngineerMs >= objectiveTurnEndDelayMs;
-    const toolkitMarkedFinal = latestEngineerEntry.is_final;
-
-    if (!toolkitMarkedFinal && !turnEndedByCustomerAi && !turnEndedBySilence) {
-      scheduleObjectiveEvalRetry(objectiveTurnEndDelayMs - silenceSinceEngineerMs);
-      return;
-    }
-
-    clearObjectiveEvalRetry();
-    const latestEngineerEvalKey = objectiveEvalEntryKey(latestEngineerEntry);
-    evaluatedEngineerEntryIdsRef.current.add(latestEngineerEvalKey);
-    setIsEvaluatingObjectives(true);
-    setObjectiveEvalError(null);
-
-    const recentTranscript: TranscriptEntry[] = normalizedTranscript.slice(-16).map((entry) => ({
+    const transcriptEntries: TranscriptEntry[] = normalizedTranscript.map((entry) => ({
       id: entry.id,
       speaker_type: entry.speaker_type,
       speaker_id: entry.speaker_id,
       text: entry.text,
       timestamp: entry.timestamp,
     }));
+    const completedObjectives: Objective[] = [];
 
-    void fetch("/api/objectives/evaluate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        scenarioId: config.id,
-        evaluator_prompt: buildEvaluatorPrompt(config.settings.evaluatorPrompt),
-        latestEngineerMessage: latestEngineerEntry.text,
-        incompleteObjectives,
-        recentTranscript,
-      }),
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as
-            | { error?: string; details?: unknown }
-            | null;
-          const details =
-            typeof payload?.details === "string"
-              ? payload.details
-              : payload?.details
-                ? JSON.stringify(payload.details)
-                : "";
-          throw new Error(
-            [payload?.error ?? `Objective evaluator failed with HTTP ${response.status}.`, details]
-              .filter(Boolean)
-              .join(" "),
-          );
+    let savedTranscriptSessionId: string | null = null;
+
+    try {
+      if (config && transcriptEntries.length > 0) {
+        const transcriptResponse = await fetch("/api/transcripts/save", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            scenarioId: config.id,
+            scenarioTitle: config.settings.meetingTitle,
+            status: "completed",
+            completedObjectives,
+            transcript: transcriptEntries,
+          }),
+        });
+
+        if (!transcriptResponse.ok) {
+          throw new Error(`Transcript save failed with HTTP ${transcriptResponse.status}.`);
         }
-        return (await response.json()) as { matchedObjectives?: MatchedObjective[] };
-      })
-      .then((payload) => {
-        const matchedObjectives = Array.isArray(payload.matchedObjectives)
-          ? payload.matchedObjectives
-          : [];
-        mergeObjectiveMatches(matchedObjectives);
-      })
-      .catch((error) => {
-        evaluatedEngineerEntryIdsRef.current.delete(latestEngineerEvalKey);
-        setObjectiveEvalError(
-          error instanceof Error
-            ? error.message
-            : "Unable to evaluate learner goal coverage for the latest response.",
-        );
-      })
-      .finally(() => {
-        setIsEvaluatingObjectives(false);
-      });
-  }, [
-    callStatus,
-    config,
-    isEvaluatingObjectives,
-    learnerGoals,
-    normalizedTranscript,
-    objectiveEvalTick,
-  ]);
+
+        const transcriptPayload = (await transcriptResponse.json()) as {
+          transcriptSessionId?: string;
+        };
+        savedTranscriptSessionId = transcriptPayload.transcriptSessionId ?? null;
+        setTranscriptSessionId(savedTranscriptSessionId);
+      }
+
+      if (config && savedTranscriptSessionId) {
+        const assessmentResponse = await fetch("/api/assessments/generate", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            transcriptSessionId: savedTranscriptSessionId,
+            scenarioId: config.id,
+            scenarioTitle: config.settings.meetingTitle,
+            learnerRole: config.plan.learnerRole,
+            objectives: learnerGoals,
+            transcript: transcriptEntries,
+          }),
+        });
+
+        if (!assessmentResponse.ok) {
+          throw new Error(`Final assessment failed with HTTP ${assessmentResponse.status}.`);
+        }
+
+        const assessmentPayload = (await assessmentResponse.json()) as {
+          assessmentId?: string;
+        };
+        setAssessmentId(assessmentPayload.assessmentId ?? null);
+        setAssessmentStatus("ready");
+      } else {
+        setAssessmentStatus("error");
+        setAssessmentError("No transcript was captured, so no final assessment was generated.");
+      }
+    } catch (error) {
+      setAssessmentStatus("error");
+      setAssessmentError(
+        error instanceof Error ? error.message : "Unable to generate final assessment.",
+      );
+    }
+
+    await cleanupVoiceRolePlay(true);
+    setCallStatus("Ended");
+    setSimulationState("finished");
+    setSessionEnded(true);
+    setIsEnding(false);
+  }
+
+  async function setPushToTalkActive(active: boolean) {
+    if (!pushToTalkEnabledRef.current || callStatus !== "In Call" || simulationState !== "in_call") {
+      return;
+    }
+    if (isPushToTalkActive === active) {
+      return;
+    }
+
+    const wasActive = isPushToTalkActive;
+    setIsPushToTalkActive(active);
+    await localAudioTrackRef.current?.setMuted(!active).catch(() => undefined);
+
+    if (wasActive && !active) {
+      setIsPushToTalkActive(false);
+    }
+  }
 
   useEffect(() => {
-    if (!config || startAttemptedRef.current) return;
+    if (!config || !sessionUser || accessDenied || startAttemptedRef.current) return;
     startAttemptedRef.current = true;
     void startVoiceRolePlay(config);
-  }, [config]);
+  }, [accessDenied, config, sessionUser]);
 
   useEffect(() => {
     return () => {
-      clearObjectiveEvalRetry();
       void cleanupVoiceRolePlay(true);
     };
   }, []);
@@ -650,78 +737,353 @@ export default function RolePlayPreviewSessionPage() {
       },
       {
         speaker: "System",
-        text: "TODO: Wire this view to ConvoAI toolkit transcript events for live roleplay captions.",
+        text: "Live captions will appear here once the conversation starts.",
       },
     ];
   }, [config]);
 
-  if (!config) {
+  if (!config || (!sessionUser && !accessDenied)) {
     return (
-      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-100">
-        <div className="mx-auto max-w-6xl text-sm text-slate-300">Loading session...</div>
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8 text-slate-950">
+        <div className="mx-auto max-w-6xl text-sm text-slate-500">Loading session...</div>
+      </div>
+    );
+  }
+
+  if (accessDenied) {
+    return (
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8 text-slate-950">
+        <div className="mx-auto max-w-2xl rounded-3xl border border-amber-200 bg-amber-50 p-8 text-amber-900 shadow-soft">
+          <p className="text-xs uppercase tracking-[0.24em] text-amber-700">Access restricted</p>
+          <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+            This roleplay is not assigned to your account
+          </h1>
+          <p className="mt-3 text-sm leading-7">
+            Ask a course admin to assign this published course to your trainee account, or sign in
+            with an admin account to test the roleplay.
+          </p>
+          <Link
+            href="/courses"
+            className="mt-5 inline-flex rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+          >
+            View Assigned Courses
+          </Link>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 bg-slate-950 px-6 py-4">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] text-slate-950">
+      {simulationState === "finished" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-[2rem] border border-white/80 bg-white/95 p-8 text-center shadow-[0_30px_80px_-35px_rgba(15,23,42,0.55)]">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-blue-100 text-2xl font-semibold text-blue-700">
+              ✓
+            </div>
+            <p className="mt-5 text-xs uppercase tracking-[0.28em] text-primary">
+              Simulation Ended
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+              Session Completed
+            </h1>
+            <p className="mt-4 text-sm leading-7 text-slate-600">
+              The roleplay call has ended. The final assessment will validate objective coverage
+              from the full transcript instead of relying on live checklist ticks.
+            </p>
+            <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/70 p-4 text-sm text-slate-700">
+              <span className="font-semibold text-slate-950">
+                {requiredGoals.length}
+              </span>{" "}
+              required learner goals used for final assessment.{" "}
+              <span className="font-semibold text-slate-950">
+                {learnerGoals.length}
+              </span>{" "}
+              total goals reviewed as guidance.
+            </div>
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              {assessmentStatus === "ready" && assessmentId
+                ? "Final assessment generated and ready to review."
+                : assessmentStatus === "saving"
+                  ? "Saving transcript and generating final assessment..."
+                  : assessmentStatus === "error"
+                    ? (assessmentError ?? "Final assessment was not generated.")
+                    : "Final assessment will be generated when the call ends."}
+              {transcriptSessionId && (
+                <p className="mt-2 text-xs text-slate-500">
+                  Transcript session: {transcriptSessionId}
+                </p>
+              )}
+            </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              {assessmentId && (
+                <Link
+                  href={`/assessment/${assessmentId}`}
+                  className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+                >
+                  View Final Assessment
+                </Link>
+              )}
+              {isTrainee ? (
+                <button
+                  type="button"
+                  onClick={() => router.push("/courses")}
+                  className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                >
+                  Return to Courses
+                </button>
+              ) : (
+                <>
+                  <Link
+                    href={`/course-builder?preview=${config.id}`}
+                    className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-blue-50"
+                  >
+                    Back to Preview
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => router.push("/course-builder")}
+                    className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                  >
+                    Return to Course Builder
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEndCallConfirm && simulationState !== "finished" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-[2rem] border border-white/80 bg-white/95 p-7 text-center shadow-[0_30px_80px_-35px_rgba(15,23,42,0.55)]">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-blue-100 text-2xl font-semibold text-blue-700">
+              ?
+            </div>
+            <p className="mt-5 text-xs uppercase tracking-[0.28em] text-primary">
+              End Role Play
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+              Do you want to end the call?
+            </h2>
+            <p className="mt-4 text-sm leading-7 text-slate-600">
+              If you are happy with the overall conversation, ending now will stop the AI customer
+              and leave the RTC channel for the trainee.
+            </p>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowEndCallConfirm(false)}
+                disabled={isEnding}
+                className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-blue-50 disabled:opacity-50"
+              >
+                Continue Call
+              </button>
+              <button
+                type="button"
+                onClick={() => void endVoiceRolePlay()}
+                disabled={isEnding}
+                className="rounded-2xl bg-rose-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:bg-rose-600 disabled:opacity-50"
+              >
+                {isEnding ? "Ending..." : "Yes, End Call"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <header className="border-b border-white/70 bg-white/80 px-6 py-4 shadow-soft backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Role Play Test Session</p>
-          <h1 className="mt-1 text-lg font-semibold">{config.settings.meetingTitle}</h1>
+          <p className="text-xs uppercase tracking-[0.2em] text-primary">Role Play Test Session</p>
+          <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">
+            {config.settings.meetingTitle}
+          </h1>
         </div>
         <div className="flex items-center gap-3">
-          <span className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm">
+          <span className="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">
             {formatTime(elapsedSeconds)}
           </span>
-          <span className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm">
-            {callStatus}
+          <span className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+            {simulationState === "finished"
+              ? "Completed"
+              : simulationState === "ending"
+                ? "Ending"
+              : callStatus}
           </span>
           <button
             type="button"
             onClick={() => setGuideOpen((current) => !current)}
-            className="rounded-lg border border-white/10 px-4 py-2 text-sm text-slate-200 hover:bg-white/10"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-soft transition hover:border-blue-200 hover:bg-blue-50"
           >
             Guide
           </button>
           <button
             type="button"
             onClick={() => setCaptionsOpen((current) => !current)}
-            className="rounded-lg border border-white/10 px-4 py-2 text-sm text-slate-200 hover:bg-white/10"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-soft transition hover:border-blue-200 hover:bg-blue-50"
           >
             Closed Captions
           </button>
           <button
             type="button"
-            onClick={endVoiceRolePlay}
-            disabled={isEnding || callStatus === "Ended"}
-            className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400"
+            onClick={() => setPushToTalkEnabled((current) => !current)}
+            disabled={callStatus === "Ended" || controlsLocked}
+            className={`rounded-2xl border px-4 py-2 text-sm font-semibold shadow-soft transition disabled:opacity-50 ${
+              pushToTalkEnabled
+                ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                : "border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50"
+            }`}
+          >
+            Push to Talk {pushToTalkEnabled ? "On" : "Off"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowEndCallConfirm(true)}
+            disabled={isEnding || callStatus === "Ended" || controlsLocked}
+            className="rounded-2xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:bg-rose-600 disabled:opacity-50"
           >
             {isEnding ? "Ending..." : "End Role Play"}
           </button>
         </div>
+        </div>
       </header>
 
-      <main className="grid min-h-[calc(100vh-73px)] grid-cols-1 lg:grid-cols-[1fr_auto]">
-        <section className="flex flex-col p-6">
-          <div className="grid flex-1 place-items-center rounded-lg border border-white/10 bg-slate-900">
-            <div className="text-center">
-              <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-full bg-cyan-300 text-4xl font-semibold text-slate-950">
-                {config.character.name.slice(0, 1).toUpperCase()}
+      <main
+        className={`mx-auto grid min-h-[calc(100vh-73px)] max-w-7xl grid-cols-1 gap-6 p-6 ${
+          guideOpen ? "lg:grid-cols-[minmax(0,1fr)_380px]" : "lg:grid-cols-1"
+        }`}
+      >
+        <section className="flex min-h-[calc(100vh-121px)] flex-col gap-5">
+          <div className="grid flex-1 place-items-center overflow-hidden rounded-[2rem] border border-blue-100 bg-white shadow-soft">
+            <div className="grid place-items-center p-8 text-center">
+              <div className="relative mx-auto h-44 w-44">
+                <div
+                  className={`absolute inset-0 rounded-[2.75rem] border-[3px] transition-all duration-300 ${
+                    aiSpeaking ? "border-emerald-400" : "border-blue-200/80"
+                  }`}
+                  style={{
+                    boxShadow: aiSpeaking
+                      ? `0 0 0 ${3 + visualAiVolume * 7}px rgba(52,211,153,${
+                          0.16 + visualAiVolume * 0.14
+                        })`
+                      : "none",
+                  }}
+                />
+                <div className="absolute inset-5 rounded-[2.1rem] border border-cyan-100" />
+                <div
+                  className="absolute inset-6 flex items-center justify-center rounded-[2rem] bg-[linear-gradient(135deg,#dbeafe,#60a5fa)] text-5xl font-semibold text-white shadow-lg shadow-blue-500/20"
+                >
+                  {config.character.name.slice(0, 1).toUpperCase()}
+                </div>
+                <div
+                  className={`absolute -bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold shadow-soft transition-all duration-300 ${
+                    aiSpeaking
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-slate-200 bg-white text-slate-500"
+                  }`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full transition-colors duration-300 ${
+                      aiSpeaking ? "bg-emerald-500" : "bg-slate-300"
+                    }`}
+                  />
+                  {aiSpeaking ? "Speaking" : "Listening"}
+                </div>
               </div>
-              <h2 className="mt-5 text-2xl font-semibold">{config.character.name}</h2>
-              <p className="mt-2 text-sm text-cyan-200">{config.character.role}</p>
-              <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-slate-300">
-                {callStatus === "In Call"
-                  ? `Joined RTC channel ${startResponse?.channelName ?? ""}. Speak as the learner and listen for the AI character response.`
-                  : "Starting the ConvoAI role play and joining the learner to the same RTC channel."}
+              <h2 className="mt-8 text-3xl font-semibold tracking-tight text-slate-950">
+                {config.character.name}
+              </h2>
+              <p className="mt-2 text-sm font-medium text-primary">{config.character.role}</p>
+              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                {aiSpeaking ? "AI customer speaking" : remoteAudioPublished ? "AI customer listening" : "Waiting for AI audio"}
               </p>
-              <div className="mt-5 flex flex-wrap items-center justify-center gap-3 text-xs text-slate-400">
-                <span>RTC: {connectionState}</span>
-                <span>Agent audio: {remoteAudioPublished ? "published" : "waiting"}</span>
+              <div className="mt-5 flex flex-wrap items-center justify-center gap-3 text-xs font-semibold text-slate-500">
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-blue-700">
+                  RTC: {connectionState}
+                </span>
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-blue-700">
+                  Agent audio: {remoteAudioPublished ? "published" : "waiting"}
+                </span>
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-blue-700">
+                  Mic:{" "}
+                  {pushToTalkEnabled
+                    ? isPushToTalkActive
+                      ? "live"
+                      : "muted until held"
+                    : "open"}
+                </span>
               </div>
+              {pushToTalkEnabled && (
+                <div className="mx-auto mt-6 max-w-md rounded-3xl border border-blue-100 bg-blue-50/70 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">
+                    Push to Talk
+                  </p>
+                  <button
+                    type="button"
+                    disabled={callStatus !== "In Call" || controlsLocked}
+                    onPointerDown={() => void setPushToTalkActive(true)}
+                    onPointerUp={() => void setPushToTalkActive(false)}
+                    onPointerLeave={() => void setPushToTalkActive(false)}
+                    onPointerCancel={() => void setPushToTalkActive(false)}
+                    onKeyDown={(event) => {
+                      if (event.code === "Space" || event.key === "Enter") {
+                        event.preventDefault();
+                        void setPushToTalkActive(true);
+                      }
+                    }}
+                    onKeyUp={(event) => {
+                      if (event.code === "Space" || event.key === "Enter") {
+                        event.preventDefault();
+                        void setPushToTalkActive(false);
+                      }
+                    }}
+                    className={`relative mt-3 w-full overflow-hidden rounded-2xl border px-5 py-5 text-sm font-semibold shadow-lg transition duration-200 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isPushToTalkActive
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-950 shadow-emerald-500/15"
+                        : "border-blue-200 bg-white text-blue-700 shadow-blue-500/10 hover:bg-blue-50"
+                    }`}
+                    style={{
+                      boxShadow:
+                        isPushToTalkActive && traineeSpeaking
+                          ? `0 0 0 ${2 + traineeFillLevel * 5}px rgba(52,211,153,${
+                              0.12 + traineeFillLevel * 0.12
+                            }), 0 16px 34px -24px rgba(15,23,42,0.35)`
+                          : undefined,
+                    }}
+                  >
+                    <span
+                      className="absolute inset-x-0 bottom-0 h-full origin-bottom bg-[linear-gradient(180deg,rgba(110,231,183,0.55),rgba(16,185,129,0.86))] transition-transform duration-200 ease-out will-change-transform"
+                      style={{
+                        transform: `scaleY(${traineeFillLevel})`,
+                      }}
+                    />
+                    <span className="relative flex items-center justify-center gap-2">
+                      <span
+                        className={`h-2.5 w-2.5 rounded-full transition-colors duration-200 ${
+                          isPushToTalkActive ? "bg-emerald-600" : "bg-blue-300"
+                        }`}
+                      />
+                      <span className="drop-shadow-[0_1px_0_rgba(255,255,255,0.45)]">
+                        {isPushToTalkActive ? "Listening... release to mute" : "Hold to Talk"}
+                      </span>
+                      {isPushToTalkActive && (
+                        <span
+                          className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-semibold text-emerald-800"
+                        >
+                          {traineeSpeaking ? `${Math.round(traineeFillLevel * 100)}%` : "Ready"}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  <p className="mt-3 text-xs leading-5 text-slate-500">
+                    Hold the button while speaking. Release when your turn is done so background
+                    noise does not interrupt the AI customer.
+                  </p>
+                </div>
+              )}
               {errorMessage && (
-                <div className="mx-auto mt-5 max-w-xl rounded-lg border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">
+                <div className="mx-auto mt-5 max-w-xl rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                   {errorMessage}
                 </div>
               )}
@@ -729,7 +1091,7 @@ export default function RolePlayPreviewSessionPage() {
                 <button
                   type="button"
                   onClick={() => startVoiceRolePlay(config)}
-                  className="mt-5 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+                  className="mt-5 rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
                 >
                   Start Voice Role Play
                 </button>
@@ -738,26 +1100,26 @@ export default function RolePlayPreviewSessionPage() {
           </div>
 
           {captionsOpen && (
-            <div className="mt-4 rounded-lg border border-white/10 bg-white/5 p-4">
+            <div className="mt-4 rounded-3xl border border-blue-100 bg-white p-4 shadow-soft">
               <div className="flex items-center justify-between">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Closed Captions</p>
-                <span className="text-xs text-slate-500">
-                  {normalizedTranscript.length > 0 ? "ConvoAI toolkit transcript" : "Waiting for transcript"}
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">Closed Captions</p>
+                <span className="text-xs font-medium text-slate-500">
+                  {normalizedTranscript.length > 0 ? "Live transcript" : "Waiting for transcript"}
                 </span>
               </div>
               <div className="mt-3 space-y-2">
                 {normalizedTranscript.length > 0
                   ? normalizedTranscript.map((caption) => (
-                      <p key={caption.id} className="text-sm text-slate-300">
-                        <span className="font-semibold text-white">
+                      <p key={caption.id} className="rounded-2xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                        <span className="font-semibold text-slate-950">
                           {caption.speaker_type === "customer_ai" ? config.character.name : "Engineer"}:
                         </span>{" "}
                         {caption.text}
                       </p>
                     ))
                   : fallbackCaptions.map((caption, index) => (
-                      <p key={`${caption.speaker}-${index}`} className="text-sm text-slate-300">
-                        <span className="font-semibold text-white">{caption.speaker}:</span>{" "}
+                      <p key={`${caption.speaker}-${index}`} className="rounded-2xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                        <span className="font-semibold text-slate-950">{caption.speaker}:</span>{" "}
                         {caption.text}
                       </p>
                     ))}
@@ -765,96 +1127,57 @@ export default function RolePlayPreviewSessionPage() {
             </div>
           )}
 
-          {sessionEnded && (
-            <div className="mt-4 rounded-lg border border-emerald-300/30 bg-emerald-300/10 p-4">
-              <p className="text-sm font-semibold text-emerald-100">Role play ended</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Link
-                  href={`/admin/roleplays/preview/${config.id}`}
-                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-slate-100 hover:bg-white/10"
-                >
-                  Back to Preview
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => router.push("/courses")}
-                  className="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
-                >
-                  Return to Courses
-                </button>
-              </div>
-            </div>
-          )}
         </section>
 
         {guideOpen && (
-          <aside className="w-full border-l border-white/10 bg-slate-900 p-5 lg:w-96">
+          <aside className="w-full rounded-3xl border border-blue-100 bg-white p-5 shadow-soft lg:w-96">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">Role play guide</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Role play guide</h2>
               <button
                 type="button"
                 onClick={() => setGuideOpen(false)}
-                className="rounded-md border border-white/10 px-3 py-1 text-sm text-slate-300 hover:bg-white/10"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1 text-sm font-semibold text-slate-500 transition hover:bg-blue-50"
               >
                 Close
               </button>
             </div>
             <div className="mt-5 space-y-5">
               <section>
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Scenario</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">{config.plan.scenario}</p>
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">Scenario</p>
+                <p className="mt-2 rounded-2xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">
+                  {config.plan.scenario}
+                </p>
               </section>
               <section>
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">AI Character</p>
-                <p className="mt-2 text-sm font-semibold text-white">{config.character.name}</p>
-                <p className="text-sm text-cyan-200">{config.character.role}</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">AI Character</p>
+                <p className="mt-2 text-sm font-semibold text-slate-950">{config.character.name}</p>
+                <p className="text-sm font-medium text-blue-700">{config.character.role}</p>
+                <p className="mt-2 rounded-2xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">
                   {config.character.personalityBackground}
                 </p>
               </section>
               <section>
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Learner Goals</p>
+                <p className="text-xs uppercase tracking-[0.2em] text-primary">Learner Goals</p>
                 <div className="mt-3 space-y-2">
                   {learnerGoals.map((goal) => (
-                    <div key={goal.id} className="rounded-lg border border-white/10 bg-slate-950 p-3">
+                    <div key={goal.id} className="rounded-2xl border border-blue-100 bg-blue-50/50 p-3">
                       <div className="flex items-start gap-3">
-                        <span
-                          className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border text-xs ${
-                            goal.completed
-                              ? "border-emerald-300 bg-emerald-300 text-slate-950"
-                              : "border-slate-600 text-slate-500"
-                          }`}
-                        >
-                          {goal.completed ? "✓" : ""}
+                        <span className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-white text-xs font-semibold text-blue-700">
+                          {goal.required ? "R" : "O"}
                         </span>
                         <div>
-                          <p className="text-sm text-white">{goal.label}</p>
+                          <p className="text-sm font-medium text-slate-950">{goal.label}</p>
                           <p className="mt-1 text-xs text-slate-500">
-                            {goal.required ? "Required" : "Optional"} ·{" "}
-                            {goal.completed ? "Covered" : "Not covered yet"}
+                            {goal.required ? "Required" : "Optional"} guide item
                           </p>
-                          {goal.completed && (
-                            <div className="mt-2 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-2 text-xs text-emerald-100">
-                              {goal.evidence && <p>Evidence: “{goal.evidence}”</p>}
-                              {typeof goal.confidence === "number" && (
-                                <p className="mt-1 text-emerald-200/80">
-                                  Confidence: {Math.round(goal.confidence * 100)}%
-                                </p>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
-                <div className="mt-3 rounded-lg border border-white/10 bg-white/5 p-3 text-xs text-slate-400">
-                  {isEvaluatingObjectives
-                    ? "Checking latest engineer response against learner goals..."
-                    : `${learnerGoals.filter((goal) => goal.completed).length}/${learnerGoals.length} goals covered`}
-                  {objectiveEvalError && (
-                    <p className="mt-2 text-amber-200">{objectiveEvalError}</p>
-                  )}
+                <div className="mt-3 rounded-2xl border border-blue-100 bg-white p-3 text-xs font-medium text-slate-500">
+                  These goals are guidance during the call. The final assessment validates
+                  objective coverage from the full transcript after the session ends.
                 </div>
               </section>
             </div>

@@ -35,9 +35,9 @@ export async function POST(request: Request) {
   }
 
   const finalizeInstruction =
-    "The support engineer has completed all required objectives for this simulation. Acknowledge the engineer's actions and clear next steps in short, professional, meeting-like closing remarks. Do not ask another follow-up question. Do not continue the conversation after this closing response.";
+    "The support engineer has completed all required objectives for this simulation. Respond as the customer who is now satisfied that the engineer collected the needed details, took ownership, and provided clear next steps. Give short, professional, meeting-like closing remarks. Do not ask another follow-up question. Do not continue the conversation after this closing response.";
 
-  const thinkUrl = `${baseUrl}/projects/${appId}/agents/${agentId}/llm/think`;
+  const thinkUrl = `${baseUrl}/projects/${appId}/agents/${agentId}/think`;
   const thinkResponse = await fetch(thinkUrl, {
     method: "POST",
     headers: {
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      input: finalizeInstruction,
+      text: finalizeInstruction,
       on_listening_action: "interrupt",
       on_thinking_action: "interrupt",
       on_speaking_action: "ignore",
@@ -71,4 +71,3 @@ export async function POST(request: Request) {
     agentId,
   });
 }
-

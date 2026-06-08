@@ -48,7 +48,7 @@ function fallbackConfig(rolePlayId: string): RolePlayConfig {
       system_message: "TODO: Generated system message will be loaded from saved role play config.",
       greeting_message: "I need someone to finally take ownership of this issue.",
       greeting_message_switch: "single_first",
-      delay_ms: 800,
+      delay_ms: 1200,
     },
   };
 }
@@ -155,4 +155,3 @@ export default function RolePlayPreviewPage() {
     </div>
   );
 }
-

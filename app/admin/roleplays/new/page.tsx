@@ -1,2 +1,5 @@
-export { default } from "@/src/app/admin/roleplays/new/page";
+import { redirect } from "next/navigation";
 
+export default function AdminRoleplaysNewRedirect() {
+  redirect("/course-builder/new");
+}

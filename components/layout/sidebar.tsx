@@ -5,7 +5,9 @@ import { usePathname } from "next/navigation";
 import type { NavItem } from "@/lib/types";
 
 import { navigationItems } from "@/lib/mock-data";
+import { canAccessNavItem } from "@/lib/mock-auth";
 import { cn } from "@/lib/utils";
+import type { MockRole } from "@/lib/types";
 import {
   AssessmentIcon,
   BuilderIcon,
@@ -37,8 +39,9 @@ function iconFor(item: NavItem["icon"], className = "h-5 w-5") {
   }
 }
 
-export function Sidebar({ collapsed = false }: { collapsed?: boolean }) {
+export function Sidebar({ collapsed = false, role }: { collapsed?: boolean; role: MockRole }) {
   const pathname = usePathname();
+  const visibleNavigationItems = navigationItems.filter((item) => canAccessNavItem(role, item));
 
   return (
     <aside
@@ -69,27 +72,55 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }) {
       </div>
 
       <nav className={cn("mt-8 space-y-2", collapsed && "px-1")}>
-        {navigationItems.map((item) => {
+        {visibleNavigationItems.map((item) => {
+          const visibleChildren = item.children?.filter((child) => canAccessNavItem(role, child)) ?? [];
+          const hasActiveChild = visibleChildren.some((child) =>
+            child.href === "/" ? pathname === child.href : pathname.startsWith(child.href),
+          );
           const isActive =
-            item.href === "/" ? pathname === item.href : pathname.startsWith(item.href);
+            item.href === "/" ? pathname === item.href : pathname.startsWith(item.href) || hasActiveChild;
 
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex rounded-2xl py-3 text-sm font-medium text-slate-300 transition-all",
-                collapsed ? "justify-center px-3" : "items-center gap-3 px-4",
-                isActive
-                  ? "bg-primary text-white shadow-lg shadow-blue-500/20"
-                  : "hover:bg-white/10 hover:text-white",
+            <div key={item.href}>
+              <Link
+                href={item.href}
+                className={cn(
+                  "flex rounded-2xl py-3 text-sm font-medium text-slate-300 transition-all",
+                  collapsed ? "justify-center px-3" : "items-center gap-3 px-4",
+                  isActive
+                    ? "bg-primary text-white shadow-lg shadow-blue-500/20"
+                    : "hover:bg-white/10 hover:text-white",
+                )}
+                title={collapsed ? item.title : undefined}
+                aria-label={item.title}
+              >
+                {iconFor(item.icon, "h-5 w-5 shrink-0")}
+                {!collapsed && <span>{item.title}</span>}
+              </Link>
+              {!collapsed && visibleChildren.length > 0 && (
+                <div className="ml-8 mt-2 space-y-1 border-l border-white/10 pl-3">
+                  {visibleChildren.map((child) => {
+                    const isChildActive =
+                      child.href === "/" ? pathname === child.href : pathname === child.href;
+
+                    return (
+                      <Link
+                        key={child.href}
+                        href={child.href}
+                        className={cn(
+                          "block rounded-xl px-3 py-2 text-xs font-semibold text-slate-400 transition",
+                          isChildActive
+                            ? "bg-white/10 text-white"
+                            : "hover:bg-white/10 hover:text-white",
+                        )}
+                      >
+                        {child.title}
+                      </Link>
+                    );
+                  })}
+                </div>
               )}
-              title={collapsed ? item.title : undefined}
-              aria-label={item.title}
-            >
-              {iconFor(item.icon, "h-5 w-5 shrink-0")}
-              {!collapsed && <span>{item.title}</span>}
-            </Link>
+            </div>
           );
         })}
       </nav>

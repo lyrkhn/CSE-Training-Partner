@@ -5,6 +5,8 @@ export type RolePlayStatus = "draft" | "published";
 export type RolePlayConfig = {
   id: string;
   status: RolePlayStatus;
+  createdAt?: string;
+  updatedAt?: string;
   plan: {
     scenario: string;
     learnerRole: string;
@@ -20,12 +22,13 @@ export type RolePlayConfig = {
     durationMinutes: number;
     learnerGoals: Objective[];
     evaluatorPrompt: string;
+    assignedTraineeIds?: string[];
   };
   generated: {
     system_message: string;
     greeting_message: string;
     greeting_message_switch: "single_first";
-    delay_ms: 800;
+    delay_ms: 1200;
   };
 };
 
