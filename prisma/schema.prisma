@@ -19,9 +19,7 @@ model RolePlay {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  transcriptSessions TranscriptSession[]
-  assessments         FinalAssessment[]
-  attempts            RolePlayAttempt[]
+  attempts RolePlayAttempt[]
 
   @@index([status])
   @@index([updatedAt])
@@ -36,7 +34,6 @@ model TranscriptSession {
   transcript          Json
   createdAt           DateTime @default(now())
 
-  rolePlay    RolePlay?          @relation(fields: [scenarioId], references: [id], onDelete: NoAction)
   assessments FinalAssessment[]
 
   @@index([scenarioId])
@@ -61,7 +58,6 @@ model FinalAssessment {
   createdAt           DateTime @default(now())
 
   transcriptSession TranscriptSession? @relation(fields: [transcriptSessionId], references: [id], onDelete: NoAction)
-  rolePlay          RolePlay?          @relation(fields: [scenarioId], references: [id], onDelete: NoAction)
 
   @@index([transcriptSessionId])
   @@index([scenarioId])
