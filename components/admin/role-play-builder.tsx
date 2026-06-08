@@ -40,6 +40,7 @@ const defaultObjectives: Objective[] = [
 const steps = ["Plan Role Play", "AI Character Customization", "Role Play Settings"];
 
 type BuilderAction = "draft" | "publish" | "preview";
+type BuilderActionPhase = "loading" | "success";
 
 type AssignableTrainee = {
   id: string;
@@ -92,6 +93,7 @@ export function RolePlayBuilder({
   const [traineeLoadError, setTraineeLoadError] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
   const [activeBuilderAction, setActiveBuilderAction] = useState<BuilderAction | null>(null);
+  const [builderActionPhase, setBuilderActionPhase] = useState<BuilderActionPhase>("loading");
   const [actionProgress, setActionProgress] = useState(0);
 
   useEffect(() => {
@@ -230,9 +232,7 @@ export function RolePlayBuilder({
   function completeBuilderAction(message: string) {
     setActionProgress(100);
     setDraftMessage(message);
-    window.setTimeout(() => {
-      setActiveBuilderAction(null);
-    }, 650);
+    setBuilderActionPhase("success");
   }
 
   async function save(
@@ -240,6 +240,7 @@ export function RolePlayBuilder({
     action: BuilderAction = status === "published" ? "publish" : "draft",
   ) {
     setActiveBuilderAction(action);
+    setBuilderActionPhase("loading");
     setDraftMessage(null);
     const config = buildRolePlayConfig(status);
     try {
@@ -265,9 +266,12 @@ export function RolePlayBuilder({
 
   async function previewRolePlay() {
     const config = await save(currentStatus, "preview");
-    setPreviewConfig(config);
-    router.push(`/course-builder?preview=${config.id}`);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.setTimeout(() => {
+      setPreviewConfig(config);
+      router.push(`/course-builder?preview=${config.id}`);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setActiveBuilderAction(null);
+    }, 900);
   }
 
   function startPreviewRolePlay(config: RolePlayConfig) {
@@ -319,6 +323,35 @@ export function RolePlayBuilder({
         : activeBuilderAction === "preview"
           ? "Preparing preview"
           : "";
+  const actionSuccessTitle =
+    activeBuilderAction === "publish"
+      ? "Role play published"
+      : activeBuilderAction === "draft"
+        ? "Draft saved"
+        : "Preview ready";
+  const actionSuccessBody =
+    activeBuilderAction === "publish"
+      ? "Your course is now available in Preview Created Courses. Redirecting you back to the course list."
+      : activeBuilderAction === "draft"
+        ? "Your draft has been saved. Redirecting you back to Preview Created Courses."
+        : "Your learner-facing preview is ready.";
+
+  useEffect(() => {
+    if (!activeBuilderAction || builderActionPhase !== "success") {
+      return;
+    }
+
+    if (activeBuilderAction === "preview") {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      router.push("/course-builder");
+      setActiveBuilderAction(null);
+    }, 1100);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeBuilderAction, builderActionPhase, router]);
 
   if (isLoadingPreviewConfig) {
     return (
@@ -459,6 +492,48 @@ export function RolePlayBuilder({
           : "min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8"
       }
     >
+      {activeBuilderAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-[2rem] border border-white/80 bg-white/95 p-8 text-center shadow-[0_30px_80px_-35px_rgba(15,23,42,0.55)]">
+            <div
+              className={`mx-auto flex h-16 w-16 items-center justify-center rounded-3xl text-2xl font-semibold ${
+                builderActionPhase === "success"
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-blue-100 text-blue-700"
+              }`}
+            >
+              {builderActionPhase === "success" ? "✓" : (
+                <span className="h-7 w-7 animate-spin rounded-full border-4 border-blue-200 border-t-blue-700" />
+              )}
+            </div>
+            <p className="mt-5 text-xs uppercase tracking-[0.28em] text-primary">
+              Role Play Builder
+            </p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+              {builderActionPhase === "success" ? actionSuccessTitle : activeBuilderActionLabel}
+            </h2>
+            <p className="mx-auto mt-4 max-w-md text-sm leading-7 text-slate-600">
+              {builderActionPhase === "success"
+                ? actionSuccessBody
+                : "Please keep this window open while we save the latest roleplay configuration."}
+            </p>
+            <div className="mt-6 rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+                <span>{builderActionPhase === "success" ? "Complete" : "Saving progress"}</span>
+                <span>{Math.round(actionProgress)}%</span>
+              </div>
+              <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-white">
+                <div
+                  className={`h-full rounded-full transition-all duration-200 ease-out ${
+                    builderActionPhase === "success" ? "bg-emerald-500" : "bg-primary"
+                  }`}
+                  style={{ width: `${actionProgress}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className={embedded ? "space-y-6 pb-40" : "mx-auto max-w-6xl space-y-6 pb-40"}>
         <header className="overflow-hidden rounded-3xl border border-blue-100 bg-hero-grid p-6 shadow-soft">
           <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
@@ -807,50 +882,7 @@ export function RolePlayBuilder({
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-            {isBuilderActionRunning ? (
-              <div className="min-w-64 rounded-2xl border border-blue-100 bg-blue-50/80 px-4 py-3 shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="relative h-10 w-10 shrink-0">
-                    <svg className="h-10 w-10 -rotate-90" viewBox="0 0 40 40" aria-hidden="true">
-                      <circle
-                        cx="20"
-                        cy="20"
-                        r="16"
-                        fill="none"
-                        stroke="rgb(219 234 254)"
-                        strokeWidth="4"
-                      />
-                      <circle
-                        cx="20"
-                        cy="20"
-                        r="16"
-                        fill="none"
-                        stroke="rgb(37 99 235)"
-                        strokeLinecap="round"
-                        strokeWidth="4"
-                        strokeDasharray={`${2 * Math.PI * 16}`}
-                        strokeDashoffset={`${2 * Math.PI * 16 * (1 - actionProgress / 100)}`}
-                        className="transition-all duration-200 ease-out"
-                      />
-                    </svg>
-                    <span className="absolute inset-0 grid place-items-center text-[10px] font-bold text-blue-700">
-                      {Math.round(actionProgress)}
-                    </span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-slate-950">
-                      {activeBuilderActionLabel}
-                    </p>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
-                      <div
-                        className="h-full rounded-full bg-primary transition-all duration-200 ease-out"
-                        style={{ width: `${actionProgress}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : draftMessage ? (
+            {draftMessage && !isBuilderActionRunning ? (
               <p className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700">
                 {draftMessage}
               </p>
