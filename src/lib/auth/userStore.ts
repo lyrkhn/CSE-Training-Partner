@@ -13,6 +13,7 @@ export type SafeAuthUser = {
   name: string;
   position?: string;
   role: MockRole;
+  isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
   source: "seed" | "managed";
@@ -24,6 +25,7 @@ type ManagedUserRecord = {
   name: string;
   position?: string;
   role: MockRole;
+  isActive?: boolean;
   passwordHash: string;
   createdAt: string;
   updatedAt: string;
@@ -35,6 +37,7 @@ type UserStoreFile = {
   seedPasswordOverrides: Record<string, string>;
   seedRoleOverrides: Record<string, MockRole>;
   seedProfileOverrides: Record<string, { email?: string; name?: string; position?: string }>;
+  inactiveUserIds: string[];
 };
 
 type AuthUserRecord = {
@@ -43,6 +46,7 @@ type AuthUserRecord = {
   name: string;
   position?: string | null;
   role: MockRole | string;
+  isActive?: boolean | null;
   createdAt?: string | Date;
   updatedAt?: string | Date;
 };
@@ -56,6 +60,7 @@ const emptyStore: UserStoreFile = {
   seedPasswordOverrides: {},
   seedRoleOverrides: {},
   seedProfileOverrides: {},
+  inactiveUserIds: [],
 };
 
 function normalizeEmail(email: string) {
@@ -86,6 +91,7 @@ function readStore(): UserStoreFile {
         parsed.seedProfileOverrides && typeof parsed.seedProfileOverrides === "object"
           ? parsed.seedProfileOverrides
           : {},
+      inactiveUserIds: Array.isArray(parsed.inactiveUserIds) ? parsed.inactiveUserIds : [],
     };
   } catch {
     return { ...emptyStore };
@@ -116,6 +122,7 @@ function verifyPasswordHash(password: string, storedHash: string) {
 
 function activeSeedUsers(store = readStore()) {
   const disabled = new Set(store.disabledSeedUserIds);
+  const inactive = new Set(store.inactiveUserIds);
   return alphaUsers
     .filter((user) => !disabled.has(user.id))
     .map((user) => ({
@@ -124,6 +131,7 @@ function activeSeedUsers(store = readStore()) {
       name: store.seedProfileOverrides[user.id]?.name ?? user.name,
       position: store.seedProfileOverrides[user.id]?.position ?? user.position,
       role: store.seedRoleOverrides[user.id] ?? user.role,
+      isActive: !inactive.has(user.id),
     }));
 }
 
@@ -142,6 +150,7 @@ function toSafeUser(user: AuthUserRecord, source: SafeAuthUser["source"]): SafeA
     name: user.name,
     position: user.position ?? undefined,
     role: isMockRole(user.role) ? user.role : "trainee",
+    isActive: user.isActive !== false,
     createdAt: toIsoString(user.createdAt),
     updatedAt: toIsoString(user.updatedAt),
     source,
@@ -253,6 +262,7 @@ export async function createAuthUser(input: {
         name,
         position,
         role: input.role,
+        isActive: true,
         passwordHash,
       },
     });
@@ -266,6 +276,7 @@ export async function createAuthUser(input: {
     name,
     position,
     role: input.role,
+    isActive: true,
     passwordHash,
     createdAt: now,
     updatedAt: now,
@@ -366,11 +377,13 @@ export async function updateAuthUserDetails(
     name: string;
     position?: string;
     role: MockRole;
+    isActive?: boolean;
   },
 ) {
   const email = normalizeEmail(input.email);
   const name = input.name.trim();
   const position = input.position?.trim() || "";
+  const isActive = input.isActive !== false;
 
   if (!email || !name || !isMockRole(input.role)) {
     throw new Error("Name, valid email, and role are required.");
@@ -403,6 +416,7 @@ export async function updateAuthUserDetails(
           name,
           position,
           role: input.role,
+          isActive,
         },
       });
 
@@ -412,7 +426,15 @@ export async function updateAuthUserDetails(
 
   const managedUsers = store.managedUsers.map((user) =>
     user.id === userId
-      ? { ...user, email, name, position, role: input.role, updatedAt: new Date().toISOString() }
+      ? {
+          ...user,
+          email,
+          name,
+          position,
+          role: input.role,
+          isActive,
+          updatedAt: new Date().toISOString(),
+        }
       : user,
   );
 
@@ -426,8 +448,16 @@ export async function updateAuthUserDetails(
     return null;
   }
 
+  const inactiveUserIds = new Set(store.inactiveUserIds);
+  if (isActive) {
+    inactiveUserIds.delete(userId);
+  } else {
+    inactiveUserIds.add(userId);
+  }
+
   writeStore({
     ...store,
+    inactiveUserIds: [...inactiveUserIds],
     seedRoleOverrides: {
       ...store.seedRoleOverrides,
       [userId]: input.role,

@@ -44,10 +44,10 @@ export function MockRoleGuard({
     <div className="rounded-3xl border border-amber-200 bg-amber-50 p-8 shadow-soft">
       <p className="text-xs uppercase tracking-[0.2em] text-amber-700">Access restricted</p>
       <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
-        This mock role cannot access Course Builder
+        This account cannot access this page
       </h1>
       <p className="mt-3 max-w-2xl text-sm leading-7 text-amber-900">
-        Sign in with a Course Admin or Root Admin account to build and test roleplay courses.
+        Sign in with an account that has the required permissions to continue.
       </p>
       <Link
         href="/"

@@ -18,12 +18,13 @@ type UpdateUserBody = {
   email?: unknown;
   name?: unknown;
   position?: unknown;
+  isActive?: unknown;
   password?: unknown;
   role?: unknown;
 };
 
-function isAdmin(role: string) {
-  return role === "root_admin" || role === "course_admin";
+function isRootAdmin(role: string) {
+  return role === "root_admin";
 }
 
 function asString(value: unknown) {
@@ -40,8 +41,8 @@ export async function PATCH(request: Request, context: RouteContext) {
   const session = await getAuthSession();
   const { id } = await context.params;
 
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+  if (!session || !isRootAdmin(session.role)) {
+    return NextResponse.json({ error: "Root admin access required." }, { status: 403 });
   }
 
   const targetUser = await findAuthUserById(id);
@@ -54,27 +55,18 @@ export async function PATCH(request: Request, context: RouteContext) {
   const nextName = asString(body.name);
   const nextEmail = asString(body.email);
   const nextPosition = asString(body.position);
+  const nextIsActive = body.isActive !== false;
 
-  if (nextName || nextEmail || typeof body.position === "string") {
+  if (nextName || nextEmail || typeof body.position === "string" || typeof body.isActive === "boolean") {
     const role = nextRole ?? targetUser.role;
     const roleChanged = role !== targetUser.role;
-
-    if (roleChanged && session.role !== "root_admin") {
-      return NextResponse.json(
-        { error: "Only root admins can change user roles." },
-        { status: 403 },
-      );
-    }
 
     if (roleChanged && session.id === id) {
       return NextResponse.json({ error: "You cannot change your own role." }, { status: 400 });
     }
 
-    if (session.role !== "root_admin" && targetUser.role !== "trainee") {
-      return NextResponse.json(
-        { error: "Only root admins can edit admin users." },
-        { status: 403 },
-      );
+    if (body.isActive === false && session.id === id) {
+      return NextResponse.json({ error: "You cannot deactivate your own account." }, { status: 400 });
     }
 
     try {
@@ -83,6 +75,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         name: nextName,
         position: nextPosition,
         role,
+        isActive: nextIsActive,
       });
       if (!user) {
         return NextResponse.json({ error: "User not found." }, { status: 404 });
@@ -98,13 +91,6 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   if (nextRole) {
-    if (session.role !== "root_admin") {
-      return NextResponse.json(
-        { error: "Only root admins can change user roles." },
-        { status: 403 },
-      );
-    }
-
     if (session.id === id) {
       return NextResponse.json({ error: "You cannot change your own role." }, { status: 400 });
     }
@@ -115,13 +101,6 @@ export async function PATCH(request: Request, context: RouteContext) {
     }
 
     return NextResponse.json({ user });
-  }
-
-  if (session.role !== "root_admin" && targetUser.role !== "trainee") {
-    return NextResponse.json(
-      { error: "Only root admins can change admin passwords." },
-      { status: 403 },
-    );
   }
 
   try {
@@ -143,8 +122,8 @@ export async function DELETE(_request: Request, context: RouteContext) {
   const session = await getAuthSession();
   const { id } = await context.params;
 
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+  if (!session || !isRootAdmin(session.role)) {
+    return NextResponse.json({ error: "Root admin access required." }, { status: 403 });
   }
 
   if (session.id === id) {
@@ -154,13 +133,6 @@ export async function DELETE(_request: Request, context: RouteContext) {
   const targetUser = await findAuthUserById(id);
   if (!targetUser) {
     return NextResponse.json({ error: "User not found." }, { status: 404 });
-  }
-
-  if (session.role !== "root_admin" && targetUser.role !== "trainee") {
-    return NextResponse.json(
-      { error: "Only root admins can delete admin users." },
-      { status: 403 },
-    );
   }
 
   const deleted = await deleteAuthUser(id);

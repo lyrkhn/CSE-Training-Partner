@@ -128,25 +128,7 @@ export function Sidebar({ collapsed = false, role }: { collapsed?: boolean; role
         })}
       </nav>
 
-      {collapsed ? (
-        <div className="mt-auto flex justify-center">
-          <div
-            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-xs font-semibold text-slate-300"
-            title="74% completion"
-          >
-            74%
-          </div>
-        </div>
-      ) : (
-        <div className="mt-auto rounded-2xl border border-white/10 bg-white/5 p-5">
-          <p className="text-sm font-semibold">Current Cohort</p>
-          <p className="mt-2 text-sm text-slate-400">Enterprise Voice and RTC Escalations</p>
-          <div className="mt-4 h-2 rounded-full bg-white/10">
-            <div className="h-2 w-3/4 rounded-full bg-primary" />
-          </div>
-          <p className="mt-2 text-xs uppercase tracking-[0.22em] text-slate-500">74% completion</p>
-        </div>
-      )}
+      <div className="mt-auto" />
     </aside>
   );
 }

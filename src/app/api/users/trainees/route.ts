@@ -13,6 +13,8 @@ export async function GET() {
   const users = await listAuthUsers();
 
   return NextResponse.json({
-    users: users.filter((user) => user.role === "trainee" || user.role === "course_admin"),
+    users: users.filter(
+      (user) => user.isActive && (user.role === "trainee" || user.role === "course_admin"),
+    ),
   });
 }

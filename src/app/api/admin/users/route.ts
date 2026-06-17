@@ -12,8 +12,8 @@ type CreateUserBody = {
   password?: unknown;
 };
 
-function isAdmin(role: string) {
-  return role === "root_admin" || role === "course_admin";
+function isRootAdmin(role: string) {
+  return role === "root_admin";
 }
 
 function asString(value: unknown) {
@@ -29,8 +29,8 @@ function asRole(value: unknown): MockRole | null {
 export async function GET() {
   const session = await getAuthSession();
 
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+  if (!session || !isRootAdmin(session.role)) {
+    return NextResponse.json({ error: "Root admin access required." }, { status: 403 });
   }
 
   return NextResponse.json({ users: await listAuthUsers() });
@@ -39,8 +39,8 @@ export async function GET() {
 export async function POST(request: Request) {
   const session = await getAuthSession();
 
-  if (!session || !isAdmin(session.role)) {
-    return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+  if (!session || !isRootAdmin(session.role)) {
+    return NextResponse.json({ error: "Root admin access required." }, { status: 403 });
   }
 
   const body = (await request.json().catch(() => ({}))) as CreateUserBody;
@@ -48,13 +48,6 @@ export async function POST(request: Request) {
 
   if (!role) {
     return NextResponse.json({ error: "Valid role is required." }, { status: 400 });
-  }
-
-  if (session.role !== "root_admin" && role !== "trainee") {
-    return NextResponse.json(
-      { error: "Only root admins can create admin users." },
-      { status: 403 },
-    );
   }
 
   try {

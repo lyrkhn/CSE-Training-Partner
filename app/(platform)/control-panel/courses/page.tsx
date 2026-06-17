@@ -3,7 +3,7 @@ import { ControlPanel } from "@/components/admin/control-panel";
 
 export default function ControlPanelCoursesPage() {
   return (
-    <MockRoleGuard allowedRoles={["root_admin", "course_admin"]}>
+    <MockRoleGuard allowedRoles={["root_admin"]}>
       <ControlPanel section="courses" />
     </MockRoleGuard>
   );

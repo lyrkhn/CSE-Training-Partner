@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAuthSession } from "@/src/lib/auth/session";
+import { listAuthUsers } from "@/src/lib/auth/userStore";
 import { canUserAccessRolePlay, canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import {
   getRolePlayConfigById,
@@ -55,8 +56,21 @@ export async function POST(request: Request) {
     name: session.name,
     role: session.role,
   };
+  const assignableUsers = await listAuthUsers();
+  const activeAssignableUserIds = new Set(
+    assignableUsers
+      .filter((user) => user.isActive && (user.role === "trainee" || user.role === "course_admin"))
+      .map((user) => user.id),
+  );
+  const assignedTraineeIds = (config.settings.assignedTraineeIds ?? []).filter((userId) =>
+    activeAssignableUserIds.has(userId),
+  );
   const saved = await saveRolePlayConfig({
     ...config,
+    settings: {
+      ...config.settings,
+      assignedTraineeIds,
+    },
     createdAt: existing?.createdAt ?? config.createdAt,
     createdBy: existing?.createdBy ?? actor,
     updatedBy: actor,

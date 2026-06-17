@@ -26,6 +26,7 @@ type EditDialogState = {
   email: string;
   position: string;
   role: MockRole;
+  isActive: boolean;
 };
 
 const defaultUserForm: UserForm = {
@@ -60,6 +61,10 @@ function roleLabel(role: MockRole) {
   }
 
   return "Trainee";
+}
+
+function userStatusLabel(isActive: boolean) {
+  return isActive ? "Active" : "Inactive";
 }
 
 function statusClass(status: RolePlayConfig["status"]) {
@@ -178,7 +183,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
     }
 
     return users.filter((user) =>
-      [user.name, user.email, user.position, roleLabel(user.role), user.source]
+      [user.name, user.email, user.position, roleLabel(user.role), userStatusLabel(user.isActive), user.source]
         .join(" ")
         .toLowerCase()
         .includes(query),
@@ -241,6 +246,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
         name: editDialog.name,
         position: editDialog.position,
         role: editDialog.role,
+        isActive: editDialog.isActive,
       }),
     });
 
@@ -486,9 +492,17 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                         {roleLabel(user.role)}
                       </td>
                       <td className="border-b border-slate-100 px-5 py-3">
-                        <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-100 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                          Active
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-md border bg-white px-2.5 py-1 text-xs font-medium text-slate-700 ${
+                            user.isActive ? "border-emerald-100" : "border-slate-200"
+                          }`}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 rounded-full ${
+                              user.isActive ? "bg-emerald-500" : "bg-slate-400"
+                            }`}
+                          />
+                          {userStatusLabel(user.isActive)}
                         </span>
                       </td>
                       <td className="border-b border-slate-100 px-5 py-3 text-slate-600">
@@ -505,6 +519,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                                 name: user.name,
                                 position: user.position ?? "",
                                 role: user.role,
+                                isActive: user.isActive,
                               })
                             }
                             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
@@ -895,6 +910,39 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                   <option value="root_admin">Root Admin</option>
                 </select>
               </label>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">Account Status</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      Inactive users are hidden from course assignment lists.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={editDialog.isActive}
+                    onClick={() =>
+                      setEditDialog((current) =>
+                        current ? { ...current, isActive: !current.isActive } : current,
+                      )
+                    }
+                    disabled={editDialog.user.id === currentUser?.id && editDialog.isActive}
+                    className={`relative h-8 w-14 rounded-full transition ${
+                      editDialog.isActive ? "bg-emerald-500" : "bg-slate-300"
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                  >
+                    <span
+                      className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition ${
+                        editDialog.isActive ? "left-7" : "left-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  {editDialog.isActive ? "Active" : "Inactive"}
+                </p>
+              </div>
             </div>
             <div className="mt-6 flex flex-wrap justify-between gap-2">
               <button

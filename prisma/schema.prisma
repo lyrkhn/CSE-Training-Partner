@@ -13,11 +13,13 @@ model AppUser {
   name         String
   position     String?
   role         String
+  isActive     Boolean  @default(true)
   passwordHash String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@index([role])
+  @@index([isActive])
   @@index([updatedAt])
 }
 
