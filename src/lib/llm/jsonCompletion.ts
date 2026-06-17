@@ -55,6 +55,20 @@ type ResponsesApiResponse = {
   output?: unknown;
 };
 
+type ResponsesApiStreamEvent = ResponsesApiResponse & {
+  type?: unknown;
+  delta?: unknown;
+  response?: unknown;
+  choices?: Array<{
+    delta?: {
+      content?: unknown;
+    };
+  }>;
+  error?: {
+    message?: unknown;
+  };
+};
+
 function asString(value: unknown) {
   return typeof value === "string" ? value : "";
 }
@@ -154,6 +168,76 @@ function extractResponsesText(payload: ResponsesApiResponse) {
 
 function extractChatCompletionText(payload: ChatCompletionResponse) {
   return asString(payload.choices?.[0]?.message?.content).trim();
+}
+
+function shouldStreamResponses(config: LlmConfig) {
+  return config.provider === "oss" && config.wireApi === "responses";
+}
+
+function extractStreamingResponseText(streamText: string) {
+  const deltas: string[] = [];
+  const completedTexts: string[] = [];
+  const errors: string[] = [];
+
+  for (const line of streamText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) {
+      continue;
+    }
+
+    const data = trimmed.slice("data:".length).trim();
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(data) as ResponsesApiStreamEvent;
+      const eventType = asString(event.type);
+      const delta = asString(event.delta);
+      const chatDelta = asString(event.choices?.[0]?.delta?.content);
+      const errorMessage = asString(event.error?.message);
+
+      if (errorMessage) {
+        errors.push(errorMessage);
+      }
+
+      if (eventType === "response.output_text.delta" && delta) {
+        deltas.push(delta);
+        continue;
+      }
+
+      if (delta && eventType.includes("delta")) {
+        deltas.push(delta);
+        continue;
+      }
+
+      if (chatDelta) {
+        deltas.push(chatDelta);
+        continue;
+      }
+
+      if (event.response && typeof event.response === "object") {
+        const completedText = extractResponsesText(event.response as ResponsesApiResponse);
+        if (completedText) {
+          completedTexts.push(completedText);
+        }
+      }
+
+      const eventText = extractResponsesText(event);
+      if (eventText) {
+        completedTexts.push(eventText);
+      }
+    } catch {
+      // Ignore non-JSON stream lines; provider streams can include keepalive comments.
+    }
+  }
+
+  const content = (deltas.length > 0 ? deltas.join("") : completedTexts.at(-1) ?? "").trim();
+  if (!content && errors.length > 0) {
+    throw new Error(errors.join("; "));
+  }
+
+  return content;
 }
 
 function resolveApiKey(provider: LlmProvider, primaryKey: unknown, fallbackKey: unknown) {
@@ -286,6 +370,7 @@ export async function generateJsonCompletion({
   validateLlmConfig(config, errorLabel === "Objective evaluator" ? "objective_evaluator" : "final_assessment");
 
   const endpoint = resolveEndpoint(config);
+  const streamResponses = shouldStreamResponses(config);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -304,6 +389,7 @@ export async function generateJsonCompletion({
             text: {
               format: responseFormatForResponses(responseFormat),
             },
+            ...(streamResponses ? { stream: true } : {}),
             ...(config.reasoningEffort
               ? { reasoning: { effort: config.reasoningEffort } }
               : {}),
@@ -324,6 +410,15 @@ export async function generateJsonCompletion({
   if (!response.ok) {
     const details = await response.text().catch(() => "");
     throw new Error(`${errorLabel} failed with HTTP ${response.status}. ${details}`);
+  }
+
+  if (streamResponses) {
+    const content = extractStreamingResponseText(await response.text());
+    if (!content) {
+      throw new Error(`${errorLabel} returned an empty streamed response.`);
+    }
+
+    return content;
   }
 
   const payload = (await response.json()) as ChatCompletionResponse | ResponsesApiResponse;
