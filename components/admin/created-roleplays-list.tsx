@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import type { AuthSessionUser } from "@/src/lib/auth/session";
+import { canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import {
   fetchRolePlayConfigs,
   persistRolePlayStatus,
@@ -42,13 +44,26 @@ function StatusBadge({ status }: { status: RolePlayConfig["status"] }) {
 
 export function CreatedRoleplaysList() {
   const [roleplays, setRoleplays] = useState<RolePlayConfig[]>([]);
+  const [user, setUser] = useState<AuthSessionUser | null>(null);
 
   async function refreshRoleplays() {
     setRoleplays(await fetchRolePlayConfigs());
   }
 
   useEffect(() => {
-    void refreshRoleplays();
+    void (async () => {
+      const [sessionResponse, configs] = await Promise.all([
+        fetch("/api/auth/session", { cache: "no-store" }),
+        fetchRolePlayConfigs(),
+      ]);
+
+      if (sessionResponse.ok) {
+        const payload = (await sessionResponse.json()) as { user?: AuthSessionUser };
+        setUser(payload.user ?? null);
+      }
+
+      setRoleplays(configs);
+    })();
   }, []);
 
   const counts = useMemo(
@@ -130,11 +145,14 @@ export function CreatedRoleplaysList() {
         </div>
       ) : (
         <div className="grid gap-4">
-          {roleplays.map((roleplay) => (
-            <article
-              key={roleplay.id}
-              className="rounded-3xl border border-blue-100 bg-white p-5 shadow-soft"
-            >
+          {roleplays.map((roleplay) => {
+            const canManage = user ? canUserManageRolePlay(user, roleplay) : false;
+
+            return (
+              <article
+                key={roleplay.id}
+                className="rounded-3xl border border-blue-100 bg-white p-5 shadow-soft"
+              >
               <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-3">
@@ -149,7 +167,7 @@ export function CreatedRoleplaysList() {
                   <p className="mt-3 line-clamp-2 max-w-4xl text-sm leading-6 text-slate-600">
                     {roleplay.plan.scenario}
                   </p>
-                  <div className="mt-4 grid gap-3 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="mt-4 grid gap-3 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-6">
                     <div className="rounded-2xl bg-slate-50 p-3">
                       <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
                         Duration
@@ -176,13 +194,21 @@ export function CreatedRoleplaysList() {
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-3">
                       <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
+                        Owner
+                      </span>
+                      <span className="mt-1 block font-semibold text-slate-800">
+                        {roleplay.createdBy?.name ?? "Root only"}
+                      </span>
+                    </div>
+                    <div className="rounded-2xl bg-slate-50 p-3">
+                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
                         Created
                       </span>
                       <span className="mt-1 block font-semibold text-slate-800">
                         {formatDate(roleplay.createdAt)}
                       </span>
                     </div>
-                    <div className="rounded-2xl bg-slate-50 p-3 sm:col-span-2 xl:col-span-1">
+                    <div className="rounded-2xl bg-slate-50 p-3">
                       <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
                         Updated
                       </span>
@@ -200,40 +226,49 @@ export function CreatedRoleplaysList() {
                   >
                     Preview/Test
                   </Link>
-                  <Link
-                    href={`/course-builder/${roleplay.id}/edit`}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50"
-                  >
-                    Edit
-                  </Link>
-                  {roleplay.status === "draft" ? (
+                  {canManage ? (
+                    <>
+                      <Link
+                        href={`/course-builder/${roleplay.id}/edit`}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50"
+                      >
+                        Edit
+                      </Link>
+                      {roleplay.status === "draft" ? (
+                        <button
+                          type="button"
+                          onClick={() => void updateStatus(roleplay.id, "published")}
+                          className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+                        >
+                          Publish
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void updateStatus(roleplay.id, "draft")}
+                          className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+                        >
+                          Unpublish
+                        </button>
+                      )}
                     <button
                       type="button"
-                      onClick={() => void updateStatus(roleplay.id, "published")}
-                      className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+                      onClick={() => void deleteRolePlay(roleplay.id)}
+                      className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
                     >
-                      Publish
+                      Delete
                     </button>
+                    </>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => void updateStatus(roleplay.id, "draft")}
-                      className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
-                    >
-                      Unpublish
-                    </button>
+                    <span className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-500">
+                      Owner-only management
+                    </span>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => void deleteRolePlay(roleplay.id)}
-                    className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
-                  >
-                    Delete
-                  </button>
                 </div>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>

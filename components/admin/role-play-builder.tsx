@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import type { AuthSessionUser } from "@/src/lib/auth/session";
 import type { Objective } from "@/src/lib/objectives/types";
+import { canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import { buildConvoAIConfig } from "@/src/lib/roleplays/buildConvoAIConfig";
 import {
   fetchRolePlayConfig,
@@ -60,6 +63,16 @@ function createId() {
   return `roleplay-${Date.now()}`;
 }
 
+async function fetchCurrentUser() {
+  const response = await fetch("/api/auth/session", { cache: "no-store" });
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as { user?: AuthSessionUser };
+  return payload.user ?? null;
+}
+
 export function RolePlayBuilder({
   embedded = false,
   rolePlayId,
@@ -73,6 +86,9 @@ export function RolePlayBuilder({
   const previewRolePlayId = searchParams.get("preview");
   const [previewConfig, setPreviewConfig] = useState<RolePlayConfig | null>(null);
   const [isLoadingPreviewConfig, setIsLoadingPreviewConfig] = useState(false);
+  const [isLoadingExistingRolePlay, setIsLoadingExistingRolePlay] = useState(Boolean(rolePlayId));
+  const [currentUser, setCurrentUser] = useState<AuthSessionUser | null>(null);
+  const [editAccessDenied, setEditAccessDenied] = useState(false);
   const [currentRolePlayId, setCurrentRolePlayId] = useState<string | null>(rolePlayId ?? null);
   const [currentStatus, setCurrentStatus] = useState<RolePlayStatus>("draft");
   const [createdAt, setCreatedAt] = useState<string | null>(null);
@@ -99,6 +115,10 @@ export function RolePlayBuilder({
   const [activeBuilderAction, setActiveBuilderAction] = useState<BuilderAction | null>(null);
   const [builderActionPhase, setBuilderActionPhase] = useState<BuilderActionPhase>("loading");
   const [actionProgress, setActionProgress] = useState(0);
+
+  useEffect(() => {
+    void fetchCurrentUser().then(setCurrentUser);
+  }, []);
 
   useEffect(() => {
     if (!activeBuilderAction) {
@@ -160,35 +180,60 @@ export function RolePlayBuilder({
 
   useEffect(() => {
     if (!rolePlayId) {
+      setIsLoadingExistingRolePlay(false);
       setCurrentRolePlayId(null);
       setCurrentStatus("draft");
       setCreatedAt(null);
+      setEditAccessDenied(false);
       return;
     }
 
+    setIsLoadingExistingRolePlay(true);
     void (async () => {
-      const stored = (await fetchRolePlayConfig(rolePlayId)) ?? getStoredRolePlayConfig(rolePlayId);
+      try {
+        const [remoteConfig, sessionUser] = await Promise.all([
+          fetchRolePlayConfig(rolePlayId),
+          fetchCurrentUser(),
+        ]);
+        const stored = remoteConfig ?? getStoredRolePlayConfig(rolePlayId);
 
-      if (!stored) {
-        setDraftMessage("Saved role play not found. You can create a new version here.");
-        return;
+        if (sessionUser) {
+          setCurrentUser(sessionUser);
+        }
+
+        if (!stored) {
+          setEditAccessDenied(false);
+          setDraftMessage("Saved role play not found. You can create a new version here.");
+          return;
+        }
+
+        if (!sessionUser || !canUserManageRolePlay(sessionUser, stored)) {
+          setEditAccessDenied(true);
+          setDraftMessage("Only the course owner or root admin can edit this role play.");
+          return;
+        }
+
+        setEditAccessDenied(false);
+        setCurrentRolePlayId(stored.id);
+        setCurrentStatus(stored.status);
+        setCreatedAt(stored.createdAt ?? null);
+        setScenario(stored.plan.scenario);
+        setLearnerRole(stored.plan.learnerRole);
+        setCharacterName(stored.character.name);
+        setCharacterRole(stored.character.role);
+        setPersonalityBackground(stored.character.personalityBackground);
+        setGreetingMessage(stored.character.greetingMessage);
+        setMeetingTitle(stored.settings.meetingTitle);
+        setDurationMinutes(stored.settings.durationMinutes);
+        setLearnerGoals(
+          stored.settings.learnerGoals.length > 0 ? stored.settings.learnerGoals : defaultObjectives,
+        );
+        setEvaluatorPrompt(stored.settings.evaluatorPrompt);
+        setAssignedTraineeIds(stored.settings.assignedTraineeIds ?? []);
+        setDraftMessage(null);
+      } finally {
+        setIsLoadingExistingRolePlay(false);
       }
-
-      setCurrentRolePlayId(stored.id);
-      setCurrentStatus(stored.status);
-      setCreatedAt(stored.createdAt ?? null);
-      setScenario(stored.plan.scenario);
-      setLearnerRole(stored.plan.learnerRole);
-      setCharacterName(stored.character.name);
-      setCharacterRole(stored.character.role);
-      setPersonalityBackground(stored.character.personalityBackground);
-      setGreetingMessage(stored.character.greetingMessage);
-      setMeetingTitle(stored.settings.meetingTitle);
-      setDurationMinutes(stored.settings.durationMinutes);
-      setLearnerGoals(stored.settings.learnerGoals.length > 0 ? stored.settings.learnerGoals : defaultObjectives);
-      setEvaluatorPrompt(stored.settings.evaluatorPrompt);
-      setAssignedTraineeIds(stored.settings.assignedTraineeIds ?? []);
-      setDraftMessage(null);
     })();
   }, [rolePlayId]);
 
@@ -262,8 +307,8 @@ export function RolePlayBuilder({
     setDraftMessage(null);
     const config = buildRolePlayConfig(status);
     try {
-      saveStoredRolePlayConfig(config);
       const saved = await persistRolePlayConfig(config);
+      saveStoredRolePlayConfig(saved);
       setCurrentRolePlayId(saved.id);
       setCurrentStatus(saved.status);
       setCreatedAt(saved.createdAt ?? null);
@@ -388,7 +433,26 @@ export function RolePlayBuilder({
     );
   }
 
+  if (isLoadingExistingRolePlay) {
+    return (
+      <section
+        id="course-builder"
+        className={
+          embedded
+            ? "rounded-3xl border border-blue-100 bg-white/90 p-6 shadow-soft"
+            : "min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8"
+        }
+      >
+        <div className={embedded ? "text-sm text-slate-500" : "mx-auto max-w-6xl text-sm text-slate-500"}>
+          Loading role play editor...
+        </div>
+      </section>
+    );
+  }
+
   if (previewConfig) {
+    const canManagePreview = currentUser ? canUserManageRolePlay(currentUser, previewConfig) : false;
+
     return (
       <section
         id="course-builder"
@@ -412,16 +476,18 @@ export function RolePlayBuilder({
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewConfig(null);
-                    router.push(`/course-builder/${previewConfig.id}/edit`);
-                  }}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-soft transition hover:border-blue-200 hover:bg-blue-50"
-                >
-                  Edit Builder
-                </button>
+                {canManagePreview && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewConfig(null);
+                      router.push(`/course-builder/${previewConfig.id}/edit`);
+                    }}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-soft transition hover:border-blue-200 hover:bg-blue-50"
+                  >
+                    Edit Builder
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => startPreviewRolePlay(previewConfig)}
@@ -496,6 +562,36 @@ export function RolePlayBuilder({
               </div>
             </aside>
           </main>
+        </div>
+      </section>
+    );
+  }
+
+  if (editAccessDenied) {
+    return (
+      <section
+        id="course-builder"
+        className={
+          embedded
+            ? "rounded-3xl border border-amber-200 bg-amber-50 p-6 shadow-soft"
+            : "min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(251,191,36,0.18),transparent_34%),linear-gradient(180deg,#fffbeb,#f8fafc)] px-6 py-8"
+        }
+      >
+        <div className={embedded ? "space-y-4" : "mx-auto max-w-3xl space-y-4"}>
+          <p className="text-xs uppercase tracking-[0.24em] text-amber-700">Owner-only access</p>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">
+            This role play can only be edited by its owner or root admin.
+          </h1>
+          <p className="text-sm leading-7 text-slate-600">
+            You can still preview or take assigned roleplay courses, but management actions are
+            limited to the creator who made the simulation.
+          </p>
+          <Link
+            href="/course-builder"
+            className="inline-flex rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+          >
+            Back to Courses
+          </Link>
         </div>
       </section>
     );

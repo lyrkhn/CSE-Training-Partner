@@ -18,6 +18,10 @@ export function canUserTakeRolePlay(user: AuthSessionUser, roleplay: RolePlayCon
   );
 }
 
+export function canUserManageRolePlay(user: AuthSessionUser, roleplay: RolePlayConfig) {
+  return user.role === "root_admin" || roleplay.createdBy?.id === user.id;
+}
+
 export function visibleRoleplaysForUser(user: AuthSessionUser, roleplays: RolePlayConfig[]) {
   if (user.role === "root_admin") {
     return roleplays.filter((roleplay) => roleplay.status === "published");

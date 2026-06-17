@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAuthSession } from "@/src/lib/auth/session";
-import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import { canUserAccessRolePlay, canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import {
   deleteRolePlayConfig,
   getRolePlayConfigById,
@@ -54,6 +54,18 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Valid status is required." }, { status: 400 });
   }
 
+  const existing = await getRolePlayConfigById(id);
+  if (!existing) {
+    return NextResponse.json({ error: "Roleplay not found." }, { status: 404 });
+  }
+
+  if (!canUserManageRolePlay(session, existing)) {
+    return NextResponse.json(
+      { error: "Only the course owner or root admin can update this roleplay." },
+      { status: 403 },
+    );
+  }
+
   const roleplay = await updateRolePlayStatus(id, body.status);
   if (!roleplay) {
     return NextResponse.json({ error: "Roleplay not found." }, { status: 404 });
@@ -70,7 +82,18 @@ export async function DELETE(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Admin access required." }, { status: 403 });
   }
 
+  const roleplay = await getRolePlayConfigById(id);
+  if (!roleplay) {
+    return NextResponse.json({ error: "Roleplay not found." }, { status: 404 });
+  }
+
+  if (!canUserManageRolePlay(session, roleplay)) {
+    return NextResponse.json(
+      { error: "Only the course owner or root admin can delete this roleplay." },
+      { status: 403 },
+    );
+  }
+
   const deleted = await deleteRolePlayConfig(id);
   return NextResponse.json({ deleted });
 }
-

@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import type { SavedFinalAssessment } from "@/src/lib/assessments/types";
+import type { AuthSessionUser } from "@/src/lib/auth/session";
 import type { SafeAuthUser } from "@/src/lib/auth/userStore";
+import { canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 import type { MockRole } from "@/lib/types";
 
@@ -73,6 +75,7 @@ function outcomeClass(outcome: SavedFinalAssessment["outcome"]) {
 }
 
 export function ControlPanel({ section = "users" }: { section?: ControlPanelSection }) {
+  const [currentUser, setCurrentUser] = useState<AuthSessionUser | null>(null);
   const [users, setUsers] = useState<SafeAuthUser[]>([]);
   const [roleplays, setRoleplays] = useState<RolePlayConfig[]>([]);
   const [assessments, setAssessments] = useState<SavedFinalAssessment[]>([]);
@@ -89,12 +92,16 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
 
   async function refreshPanel() {
     setErrorMessage(null);
-    const [usersResponse, roleplaysResponse, assessmentsResponse] = await Promise.all([
+    const [sessionResponse, usersResponse, roleplaysResponse, assessmentsResponse] = await Promise.all([
+      fetch("/api/auth/session", { cache: "no-store" }),
       fetch("/api/admin/users", { cache: "no-store" }),
       fetch("/api/roleplays", { cache: "no-store" }),
       fetch("/api/assessments", { cache: "no-store" }),
     ]);
 
+    if (!sessionResponse.ok) {
+      throw new Error(`Unable to load session. HTTP ${sessionResponse.status}.`);
+    }
     if (!usersResponse.ok) {
       throw new Error(`Unable to load users. HTTP ${usersResponse.status}.`);
     }
@@ -106,11 +113,13 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
     }
 
     const usersPayload = (await usersResponse.json()) as { users?: SafeAuthUser[] };
+    const sessionPayload = (await sessionResponse.json()) as { user?: AuthSessionUser };
     const roleplaysPayload = (await roleplaysResponse.json()) as { roleplays?: RolePlayConfig[] };
     const assessmentsPayload = (await assessmentsResponse.json()) as {
       assessments?: SavedFinalAssessment[];
     };
 
+    setCurrentUser(sessionPayload.user ?? null);
     setUsers(Array.isArray(usersPayload.users) ? usersPayload.users : []);
     setRoleplays(Array.isArray(roleplaysPayload.roleplays) ? roleplaysPayload.roleplays : []);
     setAssessments(Array.isArray(assessmentsPayload.assessments) ? assessmentsPayload.assessments : []);
@@ -552,6 +561,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
               roleplays.map((roleplay) => {
                 const courseAssessments = assessmentsForCourse(roleplay.id);
                 const isExpanded = expandedCourseId === roleplay.id;
+                const canManage = currentUser ? canUserManageRolePlay(currentUser, roleplay) : false;
                 const averageScore =
                   courseAssessments.length === 0
                     ? null
@@ -620,30 +630,38 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                         >
                           {isExpanded ? "Hide Scores" : "View Scores"}
                         </button>
-                        {roleplay.status === "draft" ? (
-                          <button
-                            type="button"
-                            onClick={() => void updateCourseStatus(roleplay.id, "published")}
-                            className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
-                          >
-                            Publish
-                          </button>
+                        {canManage ? (
+                          <>
+                            {roleplay.status === "draft" ? (
+                              <button
+                                type="button"
+                                onClick={() => void updateCourseStatus(roleplay.id, "published")}
+                                className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+                              >
+                                Publish
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void updateCourseStatus(roleplay.id, "draft")}
+                                className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+                              >
+                                Unpublish
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void deleteCourse(roleplay.id)}
+                              className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
+                            >
+                              Delete
+                            </button>
+                          </>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => void updateCourseStatus(roleplay.id, "draft")}
-                            className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
-                          >
-                            Unpublish
-                          </button>
+                          <span className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-sm font-semibold text-slate-500">
+                            Owner-only management
+                          </span>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => void deleteCourse(roleplay.id)}
-                          className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
-                        >
-                          Delete
-                        </button>
                       </div>
                     </div>
 

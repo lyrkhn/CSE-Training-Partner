@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAuthSession } from "@/src/lib/auth/session";
-import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import { canUserAccessRolePlay, canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import {
   getRolePlayConfigById,
   listRolePlayConfigs,
@@ -42,6 +42,13 @@ export async function POST(request: Request) {
   }
 
   const existing = await getRolePlayConfigById(config.id);
+  if (existing && !canUserManageRolePlay(session, existing)) {
+    return NextResponse.json(
+      { error: "Only the course owner or root admin can edit this roleplay." },
+      { status: 403 },
+    );
+  }
+
   const actor = {
     id: session.id,
     email: session.email,
