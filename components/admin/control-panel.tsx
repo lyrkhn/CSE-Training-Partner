@@ -81,6 +81,8 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
   const [editDialog, setEditDialog] = useState<EditDialogState | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<SafeAuthUser | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
 
   async function refreshPanel() {
     setErrorMessage(null);
@@ -122,6 +124,19 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!message && !errorMessage) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setMessage(null);
+      setErrorMessage(null);
+    }, 5000);
+
+    return () => window.clearTimeout(timeout);
+  }, [errorMessage, message]);
 
   const stats = useMemo(() => {
     const published = roleplays.filter((roleplay) => roleplay.status === "published").length;
@@ -193,7 +208,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
 
     setUserForm(defaultUserForm);
     setIsCreateUserOpen(false);
-    setMessage("User created.");
+    setMessage(`User "${userForm.name.trim()}" was created successfully.`);
     await refreshPanel();
   }
 
@@ -227,24 +242,34 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
     await refreshPanel();
   }
 
-  async function deleteUser(userId: string) {
-    if (!window.confirm("Delete this user?")) {
-      return false;
+  async function confirmDeleteUser() {
+    if (!deleteDialog) {
+      return;
     }
 
+    setIsDeletingUser(true);
     setMessage(null);
     setErrorMessage(null);
-    const response = await fetch(`/api/admin/users/${userId}`, { method: "DELETE" });
-    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    const userName = deleteDialog.name;
 
-    if (!response.ok) {
-      setErrorMessage(payload.error ?? `Unable to delete user. HTTP ${response.status}.`);
-      return false;
+    try {
+      const response = await fetch(`/api/admin/users/${deleteDialog.id}`, { method: "DELETE" });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+      if (!response.ok) {
+        setErrorMessage(payload.error ?? `Unable to delete user. HTTP ${response.status}.`);
+        return;
+      }
+
+      setDeleteDialog(null);
+      setEditDialog(null);
+      setMessage(`User "${userName}" was deleted successfully.`);
+      await refreshPanel();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to delete user.");
+    } finally {
+      setIsDeletingUser(false);
     }
-
-    setMessage("User deleted.");
-    await refreshPanel();
-    return true;
   }
 
   async function updateCourseStatus(rolePlayId: string, status: RolePlayConfig["status"]) {
@@ -337,13 +362,35 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
 
       {(message || errorMessage) && (
         <div
-          className={`rounded-2xl border p-4 text-sm font-medium ${
+          className={`fixed right-6 top-6 z-[70] max-w-md rounded-2xl border p-4 text-sm font-medium shadow-2xl ${
             errorMessage
               ? "border-amber-200 bg-amber-50 text-amber-900"
               : "border-emerald-200 bg-emerald-50 text-emerald-800"
           }`}
+          role="status"
         >
-          {errorMessage ?? message}
+          <div className="flex items-start gap-3">
+            <span
+              className={`mt-1 h-2.5 w-2.5 rounded-full ${
+                errorMessage ? "bg-amber-500" : "bg-emerald-500"
+              }`}
+            />
+            <div>
+              <p className="font-semibold">{errorMessage ? "Action needed" : "Success"}</p>
+              <p className="mt-1 font-medium">{errorMessage ?? message}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setMessage(null);
+                setErrorMessage(null);
+              }}
+              className="ml-2 text-lg leading-none text-current opacity-60 transition hover:opacity-100"
+              aria-label="Dismiss notification"
+            >
+              x
+            </button>
+          </div>
         </div>
       )}
 
@@ -448,7 +495,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                           </button>
                           <button
                             type="button"
-                            onClick={() => void deleteUser(user.id)}
+                            onClick={() => setDeleteDialog(user)}
                             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                           >
                             Delete
@@ -801,13 +848,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
             <div className="mt-6 flex flex-wrap justify-between gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  void (async () => {
-                    if (await deleteUser(editDialog.user.id)) {
-                      setEditDialog(null);
-                    }
-                  })();
-                }}
+                onClick={() => setDeleteDialog(editDialog.user)}
                 className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
               >
                 Delete User
@@ -829,6 +870,45 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
               </div>
             </div>
           </form>
+        </div>
+      )}
+
+      {deleteDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-md rounded-3xl border border-rose-100 bg-white p-6 shadow-2xl">
+            <p className="text-xs uppercase tracking-[0.24em] text-rose-500">Confirm Delete</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+              Delete this user?
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              This will permanently remove{" "}
+              <span className="font-semibold text-slate-950">{deleteDialog.name}</span> from user
+              management. This action cannot be undone.
+            </p>
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              <p className="font-semibold text-slate-950">{deleteDialog.name}</p>
+              <p className="mt-1">{deleteDialog.email}</p>
+              <p className="mt-1">{roleLabel(deleteDialog.role)}</p>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                disabled={isDeletingUser}
+                onClick={() => setDeleteDialog(null)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingUser}
+                onClick={() => void confirmDeleteUser()}
+                className="rounded-2xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isDeletingUser ? "Deleting..." : "Confirm Delete"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
