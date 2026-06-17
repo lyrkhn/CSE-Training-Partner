@@ -18,27 +18,33 @@ async function ensureAssessmentsDir() {
 
 export async function saveFinalAssessment(assessment: SavedFinalAssessment) {
   if (isDatabaseConfigured()) {
-    await prisma.finalAssessment.create({
-      data: {
+    const data = {
+      transcriptSessionId: assessment.transcriptSessionId,
+      scenarioId: assessment.scenarioId,
+      scenarioTitle: assessment.scenarioTitle,
+      learnerId: assessment.learnerId,
+      learnerName: assessment.learnerName,
+      learnerEmail: assessment.learnerEmail,
+      learnerRole: assessment.learnerRole,
+      overallScore: assessment.overallScore,
+      outcome: assessment.outcome,
+      summary: assessment.summary,
+      strengths: assessment.strengths as unknown as Prisma.InputJsonValue,
+      improvements: assessment.improvements as unknown as Prisma.InputJsonValue,
+      completedObjectives: assessment.completedObjectives as unknown as Prisma.InputJsonValue,
+      missedObjectives: assessment.missedObjectives as unknown as Prisma.InputJsonValue,
+      dimensions: assessment.dimensions as unknown as Prisma.InputJsonValue,
+      transcript: assessment.transcript as unknown as Prisma.InputJsonValue,
+      createdAt: new Date(assessment.createdAt),
+    };
+
+    await prisma.finalAssessment.upsert({
+      where: { id: assessment.id },
+      create: {
         id: assessment.id,
-        transcriptSessionId: assessment.transcriptSessionId,
-        scenarioId: assessment.scenarioId,
-        scenarioTitle: assessment.scenarioTitle,
-        learnerId: assessment.learnerId,
-        learnerName: assessment.learnerName,
-        learnerEmail: assessment.learnerEmail,
-        learnerRole: assessment.learnerRole,
-        overallScore: assessment.overallScore,
-        outcome: assessment.outcome,
-        summary: assessment.summary,
-        strengths: assessment.strengths as unknown as Prisma.InputJsonValue,
-        improvements: assessment.improvements as unknown as Prisma.InputJsonValue,
-        completedObjectives: assessment.completedObjectives as unknown as Prisma.InputJsonValue,
-        missedObjectives: assessment.missedObjectives as unknown as Prisma.InputJsonValue,
-        dimensions: assessment.dimensions as unknown as Prisma.InputJsonValue,
-        transcript: assessment.transcript as unknown as Prisma.InputJsonValue,
-        createdAt: new Date(assessment.createdAt),
+        ...data,
       },
+      update: data,
     });
 
     return assessment;

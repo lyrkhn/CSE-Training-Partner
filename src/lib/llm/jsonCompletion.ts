@@ -156,6 +156,20 @@ function extractChatCompletionText(payload: ChatCompletionResponse) {
   return asString(payload.choices?.[0]?.message?.content).trim();
 }
 
+function resolveApiKey(provider: LlmProvider, primaryKey: unknown, fallbackKey: unknown) {
+  const scopedKey = asString(primaryKey).trim();
+  if (scopedKey) {
+    return scopedKey;
+  }
+
+  const sharedOssKey = asString(process.env.OSS_API_KEY).trim();
+  if (provider === "oss" && sharedOssKey) {
+    return sharedOssKey;
+  }
+
+  return asString(fallbackKey).trim();
+}
+
 export function getFinalAssessmentLlmConfig(): LlmConfig {
   const provider = normalizeProvider(
     asString(
@@ -176,12 +190,11 @@ export function getFinalAssessmentLlmConfig(): LlmConfig {
   return {
     provider,
     wireApi,
-    apiKey:
-      provider === "oss"
-        ? asString(process.env.OSS_API_KEY).trim()
-        : asString(
-            process.env.FINAL_ASSESSMENT_API_KEY || process.env.OBJECTIVE_EVALUATOR_API_KEY,
-          ).trim(),
+    apiKey: resolveApiKey(
+      provider,
+      process.env.FINAL_ASSESSMENT_API_KEY,
+      process.env.OBJECTIVE_EVALUATOR_API_KEY,
+    ),
     model: asString(
       process.env.FINAL_ASSESSMENT_MODEL ||
         (provider === "oss" ? process.env.OSS_MODEL : undefined) ||
@@ -223,12 +236,11 @@ export function getObjectiveEvaluatorLlmConfig(): LlmConfig {
   return {
     provider,
     wireApi,
-    apiKey:
-      provider === "oss"
-        ? asString(process.env.OSS_API_KEY).trim()
-        : asString(
-            process.env.OBJECTIVE_EVALUATOR_API_KEY || process.env.FINAL_ASSESSMENT_API_KEY,
-          ).trim(),
+    apiKey: resolveApiKey(
+      provider,
+      process.env.OBJECTIVE_EVALUATOR_API_KEY,
+      process.env.FINAL_ASSESSMENT_API_KEY,
+    ),
     model: asString(
       process.env.OBJECTIVE_EVALUATOR_MODEL ||
         (provider === "oss" ? process.env.OSS_MODEL : undefined) ||
@@ -253,8 +265,12 @@ export function getObjectiveEvaluatorLlmConfig(): LlmConfig {
 export function validateLlmConfig(config: LlmConfig, scope: Scope) {
   if (!config.apiKey || !config.model || !config.baseUrl) {
     const prefix = scope === "final_assessment" ? "FINAL_ASSESSMENT" : "OBJECTIVE_EVALUATOR";
+    const keyNames =
+      config.provider === "oss"
+        ? `OSS_API_KEY or ${prefix}_API_KEY`
+        : `${prefix}_API_KEY`;
     throw new Error(
-      `${prefix}_PROVIDER/${prefix}_MODEL and ${config.provider === "oss" ? "OSS_API_KEY" : `${prefix}_API_KEY`} are required.`,
+      `${prefix}_PROVIDER/${prefix}_MODEL and ${keyNames} are required.`,
     );
   }
 }
