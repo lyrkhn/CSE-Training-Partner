@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 
 import { getAuthSession } from "@/src/lib/auth/session";
 import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
-import { listRolePlayConfigs, saveRolePlayConfig } from "@/src/lib/roleplays/serverStorage";
+import {
+  getRolePlayConfigById,
+  listRolePlayConfigs,
+  saveRolePlayConfig,
+} from "@/src/lib/roleplays/serverStorage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
 function isAdmin(role: string) {
@@ -37,7 +41,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Valid roleplay config is required." }, { status: 400 });
   }
 
-  const saved = await saveRolePlayConfig(config);
+  const existing = await getRolePlayConfigById(config.id);
+  const actor = {
+    id: session.id,
+    email: session.email,
+    name: session.name,
+    role: session.role,
+  };
+  const saved = await saveRolePlayConfig({
+    ...config,
+    createdAt: existing?.createdAt ?? config.createdAt,
+    createdBy: existing?.createdBy ?? actor,
+    updatedBy: actor,
+  });
   return NextResponse.json({ roleplay: saved });
 }
-

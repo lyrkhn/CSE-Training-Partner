@@ -5,14 +5,11 @@ import type {
   ObjectiveEvaluationResponse,
   TranscriptEntry,
 } from "@/src/lib/objectives/types";
-
-type OpenAiChatResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string | null;
-    };
-  }>;
-};
+import {
+  generateJsonCompletion,
+  getObjectiveEvaluatorLlmConfig,
+  validateLlmConfig,
+} from "@/src/lib/llm/jsonCompletion";
 
 const DEFAULT_MIN_OBJECTIVE_CONFIDENCE = 0.4;
 const stopWords = new Set([
@@ -451,22 +448,16 @@ export async function evaluateObjectives(
     return { matchedObjectives: localMatches };
   }
 
-  const provider = asString(process.env.OBJECTIVE_EVALUATOR_PROVIDER).trim().toLowerCase();
-  const apiKey = asString(process.env.OBJECTIVE_EVALUATOR_API_KEY).trim();
-  const model = asString(process.env.OBJECTIVE_EVALUATOR_MODEL).trim();
+  const llmConfig = getObjectiveEvaluatorLlmConfig();
 
-  if (!provider || !apiKey || !model) {
+  try {
+    validateLlmConfig(llmConfig, "objective_evaluator");
+  } catch (error) {
     if (localMatches.length > 0) {
       return { matchedObjectives: localMatches };
     }
 
-    throw new Error(
-      "OBJECTIVE_EVALUATOR_PROVIDER, OBJECTIVE_EVALUATOR_API_KEY, and OBJECTIVE_EVALUATOR_MODEL are required.",
-    );
-  }
-
-  if (provider !== "openai") {
-    throw new Error("Unsupported OBJECTIVE_EVALUATOR_PROVIDER. Currently supported: openai.");
+    throw error;
   }
 
   const engineerTranscript = input.recentTranscript
@@ -513,34 +504,14 @@ export async function evaluateObjectives(
     ],
   };
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: evaluatorPrompt },
-        { role: "user", content: JSON.stringify(userPayload) },
-      ],
-    }),
-    cache: "no-store",
+  const content = await generateJsonCompletion({
+    config: llmConfig,
+    systemPrompt: evaluatorPrompt,
+    userPayload,
+    temperature: 0,
+    responseFormat: { type: "json_object" },
+    errorLabel: "Objective evaluator",
   });
-
-  if (!response.ok) {
-    const details = await response.text().catch(() => "");
-    throw new Error(`Objective evaluator failed with HTTP ${response.status}. ${details}`);
-  }
-
-  const payload = (await response.json()) as OpenAiChatResponse;
-  const content = asString(payload.choices?.[0]?.message?.content).trim();
-  if (!content) {
-    return { matchedObjectives: [] };
-  }
 
   const llmMatches = parseMatchedObjectives(content, objectiveSet);
   return {

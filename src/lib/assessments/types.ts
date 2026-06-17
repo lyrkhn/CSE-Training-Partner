@@ -29,6 +29,9 @@ export type SavedFinalAssessment = {
   transcriptSessionId: string;
   scenarioId: string;
   scenarioTitle: string;
+  learnerId?: string;
+  learnerName?: string;
+  learnerEmail?: string;
   learnerRole?: string;
   createdAt: string;
   overallScore: number;
@@ -46,6 +49,9 @@ export type GenerateAssessmentInput = {
   transcriptSessionId: string;
   scenarioId: string;
   scenarioTitle: string;
+  learnerId?: string;
+  learnerName?: string;
+  learnerEmail?: string;
   learnerRole?: string;
   objectives: Objective[];
   transcript: TranscriptEntry[];

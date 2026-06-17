@@ -23,7 +23,7 @@ export const alphaUsers: AlphaUser[] = [
     email: alphaValue("ALPHA_ROOT_ADMIN_EMAIL", "root.admin@cse.local"),
     name: "Root Admin",
     role: "root_admin",
-    password: alphaValue("ALPHA_ROOT_ADMIN_PASSWORD", "rootadmin2026"),
+    password: alphaValue("ALPHA_ROOT_ADMIN_PASSWORD", "P@ssword1"),
   },
   {
     id: "alpha-course-admin",

@@ -1,0 +1,836 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+
+import type { SavedFinalAssessment } from "@/src/lib/assessments/types";
+import type { SafeAuthUser } from "@/src/lib/auth/userStore";
+import type { RolePlayConfig } from "@/src/lib/roleplays/types";
+import type { MockRole } from "@/lib/types";
+
+type ControlPanelSection = "users" | "courses";
+
+type UserForm = {
+  name: string;
+  email: string;
+  role: MockRole;
+  password: string;
+};
+
+type EditDialogState = {
+  user: SafeAuthUser;
+  name: string;
+  email: string;
+  role: MockRole;
+};
+
+const defaultUserForm: UserForm = {
+  name: "",
+  email: "",
+  role: "trainee",
+  password: "",
+};
+
+function formatDate(value?: string) {
+  if (!value) {
+    return "Not recorded";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function roleLabel(role: MockRole) {
+  if (role === "root_admin") {
+    return "Root Admin";
+  }
+
+  if (role === "course_admin") {
+    return "Course Admin";
+  }
+
+  return "Trainee";
+}
+
+function statusClass(status: RolePlayConfig["status"]) {
+  return status === "published"
+    ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
+    : "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
+}
+
+function outcomeClass(outcome: SavedFinalAssessment["outcome"]) {
+  return outcome === "passed"
+    ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
+    : "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
+}
+
+export function ControlPanel({ section = "users" }: { section?: ControlPanelSection }) {
+  const [users, setUsers] = useState<SafeAuthUser[]>([]);
+  const [roleplays, setRoleplays] = useState<RolePlayConfig[]>([]);
+  const [assessments, setAssessments] = useState<SavedFinalAssessment[]>([]);
+  const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [userForm, setUserForm] = useState<UserForm>(defaultUserForm);
+  const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
+  const [editDialog, setEditDialog] = useState<EditDialogState | null>(null);
+
+  async function refreshPanel() {
+    setErrorMessage(null);
+    const [usersResponse, roleplaysResponse, assessmentsResponse] = await Promise.all([
+      fetch("/api/admin/users", { cache: "no-store" }),
+      fetch("/api/roleplays", { cache: "no-store" }),
+      fetch("/api/assessments", { cache: "no-store" }),
+    ]);
+
+    if (!usersResponse.ok) {
+      throw new Error(`Unable to load users. HTTP ${usersResponse.status}.`);
+    }
+    if (!roleplaysResponse.ok) {
+      throw new Error(`Unable to load courses. HTTP ${roleplaysResponse.status}.`);
+    }
+    if (!assessmentsResponse.ok) {
+      throw new Error(`Unable to load exam scores. HTTP ${assessmentsResponse.status}.`);
+    }
+
+    const usersPayload = (await usersResponse.json()) as { users?: SafeAuthUser[] };
+    const roleplaysPayload = (await roleplaysResponse.json()) as { roleplays?: RolePlayConfig[] };
+    const assessmentsPayload = (await assessmentsResponse.json()) as {
+      assessments?: SavedFinalAssessment[];
+    };
+
+    setUsers(Array.isArray(usersPayload.users) ? usersPayload.users : []);
+    setRoleplays(Array.isArray(roleplaysPayload.roleplays) ? roleplaysPayload.roleplays : []);
+    setAssessments(Array.isArray(assessmentsPayload.assessments) ? assessmentsPayload.assessments : []);
+  }
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        await refreshPanel();
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Unable to load control panel.");
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, []);
+
+  const stats = useMemo(() => {
+    const published = roleplays.filter((roleplay) => roleplay.status === "published").length;
+    const traineeCount = users.filter((user) => user.role === "trainee").length;
+    const averageScore =
+      assessments.length === 0
+        ? null
+        : Math.round(
+            assessments.reduce((total, assessment) => total + assessment.overallScore, 0) /
+              assessments.length,
+          );
+
+    return {
+      users: users.length,
+      traineeCount,
+      courses: roleplays.length,
+      published,
+      exams: assessments.length,
+      averageScore,
+    };
+  }, [assessments, roleplays, users]);
+
+  const filteredUsers = useMemo(() => {
+    const query = userSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return users;
+    }
+
+    return users.filter((user) =>
+      [user.name, user.email, roleLabel(user.role), user.source]
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [userSearchQuery, users]);
+
+  function assessmentsForCourse(roleplayId: string) {
+    return assessments.filter((assessment) => assessment.scenarioId === roleplayId);
+  }
+
+  function learnerName(assessment: SavedFinalAssessment) {
+    if (assessment.learnerName) {
+      return assessment.learnerName;
+    }
+
+    if (assessment.learnerId) {
+      return users.find((user) => user.id === assessment.learnerId)?.name ?? assessment.learnerId;
+    }
+
+    return "Unknown learner";
+  }
+
+  async function createUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage(null);
+    setErrorMessage(null);
+
+    const response = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(userForm),
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      setErrorMessage(payload.error ?? `Unable to create user. HTTP ${response.status}.`);
+      return;
+    }
+
+    setUserForm(defaultUserForm);
+    setIsCreateUserOpen(false);
+    setMessage("User created.");
+    await refreshPanel();
+  }
+
+  async function submitUserEdit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editDialog) {
+      return;
+    }
+
+    setMessage(null);
+    setErrorMessage(null);
+
+    const response = await fetch(`/api/admin/users/${editDialog.user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: editDialog.email,
+        name: editDialog.name,
+        role: editDialog.role,
+      }),
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      setErrorMessage(payload.error ?? `Unable to update user. HTTP ${response.status}.`);
+      return;
+    }
+
+    setEditDialog(null);
+    setMessage("User details updated.");
+    await refreshPanel();
+  }
+
+  async function deleteUser(userId: string) {
+    if (!window.confirm("Delete this user?")) {
+      return false;
+    }
+
+    setMessage(null);
+    setErrorMessage(null);
+    const response = await fetch(`/api/admin/users/${userId}`, { method: "DELETE" });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+    if (!response.ok) {
+      setErrorMessage(payload.error ?? `Unable to delete user. HTTP ${response.status}.`);
+      return false;
+    }
+
+    setMessage("User deleted.");
+    await refreshPanel();
+    return true;
+  }
+
+  async function updateCourseStatus(rolePlayId: string, status: RolePlayConfig["status"]) {
+    setMessage(null);
+    setErrorMessage(null);
+    const response = await fetch(`/api/roleplays/${rolePlayId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+    if (!response.ok) {
+      setErrorMessage(payload.error ?? `Unable to update course. HTTP ${response.status}.`);
+      return;
+    }
+
+    setMessage(status === "published" ? "Course published." : "Course unpublished.");
+    await refreshPanel();
+  }
+
+  async function deleteCourse(rolePlayId: string) {
+    if (!window.confirm("Delete this course and its attempt tracking?")) {
+      return;
+    }
+
+    setMessage(null);
+    setErrorMessage(null);
+    const response = await fetch(`/api/roleplays/${rolePlayId}`, { method: "DELETE" });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+    if (!response.ok) {
+      setErrorMessage(payload.error ?? `Unable to delete course. HTTP ${response.status}.`);
+      return;
+    }
+
+    setMessage("Course deleted.");
+    await refreshPanel();
+  }
+
+  if (isLoading) {
+    return (
+      <section className="rounded-3xl border border-blue-100 bg-white p-6 text-sm text-slate-500 shadow-soft">
+        Loading control panel...
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <section className="overflow-hidden rounded-3xl border border-blue-100 bg-hero-grid p-7 shadow-soft">
+        <p className="text-xs uppercase tracking-[0.24em] text-primary">Admin Console</p>
+        <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="text-4xl font-semibold tracking-tight text-slate-950">
+              {section === "users" ? "User Management" : "Course List"}
+            </h1>
+            <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-600">
+              {section === "users"
+                ? "Create app users, delete users, change passwords through a secure popup, and update roles."
+                : "Publish or remove roleplay courses and review which users took each exam with their saved scores."}
+            </p>
+          </div>
+          <Link
+            href="/course-builder/new"
+            className="inline-flex rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+          >
+            Create Course
+          </Link>
+        </div>
+        <div className="mt-6 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {[
+            { label: "Users", value: stats.users },
+            { label: "Trainees", value: stats.traineeCount },
+            { label: "Courses", value: stats.courses },
+            { label: "Published", value: stats.published },
+            { label: "Exam Takes", value: stats.exams },
+            {
+              label: "Avg Score",
+              value: stats.averageScore === null ? "N/A" : `${stats.averageScore}%`,
+            },
+          ].map((item) => (
+            <div key={item.label} className="rounded-2xl border border-blue-100 bg-white/85 p-4">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{item.label}</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-950">{item.value}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {(message || errorMessage) && (
+        <div
+          className={`rounded-2xl border p-4 text-sm font-medium ${
+            errorMessage
+              ? "border-amber-200 bg-amber-50 text-amber-900"
+              : "border-emerald-200 bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {errorMessage ?? message}
+        </div>
+      )}
+
+      {section === "users" ? (
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-soft">
+          <div className="border-b border-slate-200 p-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
+                    User management
+                  </h2>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                    {users.length}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-slate-500">
+                  Manage team members and their account permissions in one simple table.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label className="flex min-w-[260px] items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm transition focus-within:border-primary">
+                  <span className="text-slate-400">Search</span>
+                  <input
+                    value={userSearchQuery}
+                    onChange={(event) => setUserSearchQuery(event.target.value)}
+                    className="w-full bg-transparent text-slate-700 outline-none placeholder:text-slate-400"
+                    placeholder="Name, email, or role"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateUserOpen(true)}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                >
+                  Add User
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] border-separate border-spacing-0 text-left text-sm">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="border-b border-slate-200 px-5 py-3 font-medium">Full name</th>
+                  <th className="border-b border-slate-200 px-5 py-3 font-medium">Email</th>
+                  <th className="border-b border-slate-200 px-5 py-3 font-medium">Role</th>
+                  <th className="border-b border-slate-200 px-5 py-3 font-medium">Status</th>
+                  <th className="border-b border-slate-200 px-5 py-3 font-medium">Joined date</th>
+                  <th className="border-b border-slate-200 px-5 py-3 text-right font-medium">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-12 text-center text-sm text-slate-500">
+                      No users match your search.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredUsers.map((user) => (
+                    <tr key={user.id} className="text-slate-700 transition hover:bg-slate-50">
+                      <td className="border-b border-slate-100 px-5 py-3 font-medium text-slate-950">
+                        {user.name}
+                      </td>
+                      <td className="border-b border-slate-100 px-5 py-3">
+                        <span className="text-slate-600 underline decoration-slate-300 underline-offset-4">
+                          {user.email}
+                        </span>
+                      </td>
+                      <td className="border-b border-slate-100 px-5 py-3 text-slate-600">
+                        {roleLabel(user.role)}
+                      </td>
+                      <td className="border-b border-slate-100 px-5 py-3">
+                        <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-100 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          Active
+                        </span>
+                      </td>
+                      <td className="border-b border-slate-100 px-5 py-3 text-slate-600">
+                        {formatDate(user.createdAt)}
+                      </td>
+                      <td className="border-b border-slate-100 px-5 py-3">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditDialog({
+                                user,
+                                email: user.email,
+                                name: user.name,
+                                role: user.role,
+                              })
+                            }
+                            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteUser(user.id)}
+                            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-slate-200 px-5 py-4 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              Showing {filteredUsers.length} of {users.length} users
+            </span>
+            <span>Rows per page: {filteredUsers.length}</span>
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-3xl border border-blue-100 bg-white p-6 shadow-soft">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.24em] text-primary">Course List</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                All roleplay courses
+              </h2>
+              <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-600">
+                Publish, unpublish, or delete courses. Open the exam taker list to see saved scores
+                per course.
+              </p>
+            </div>
+            <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+              {roleplays.length} courses
+            </span>
+          </div>
+
+          <div className="mt-5 space-y-4">
+            {roleplays.length === 0 ? (
+              <div className="rounded-3xl border border-dashed border-blue-200 bg-blue-50/50 p-8 text-center">
+                <p className="text-sm text-slate-600">No roleplay courses have been created yet.</p>
+              </div>
+            ) : (
+              roleplays.map((roleplay) => {
+                const courseAssessments = assessmentsForCourse(roleplay.id);
+                const isExpanded = expandedCourseId === roleplay.id;
+                const averageScore =
+                  courseAssessments.length === 0
+                    ? null
+                    : Math.round(
+                        courseAssessments.reduce(
+                          (total, assessment) => total + assessment.overallScore,
+                          0,
+                        ) / courseAssessments.length,
+                      );
+
+                return (
+                  <article key={roleplay.id} className="rounded-3xl border border-blue-100 bg-blue-50/35 p-5">
+                    <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <h3 className="text-xl font-semibold tracking-tight text-slate-950">
+                            {roleplay.settings.meetingTitle}
+                          </h3>
+                          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusClass(roleplay.status)}`}>
+                            {roleplay.status === "published" ? "Published" : "Draft"}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm font-medium text-blue-700">
+                          {roleplay.character.name} - {roleplay.character.role}
+                        </p>
+                        <p className="mt-3 line-clamp-2 max-w-4xl text-sm leading-6 text-slate-600">
+                          {roleplay.plan.scenario}
+                        </p>
+                        <div className="mt-4 grid gap-3 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-5">
+                          <div className="rounded-2xl bg-white p-3 ring-1 ring-blue-100">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">Created By</span>
+                            <span className="mt-1 block font-semibold text-slate-800">
+                              {roleplay.createdBy?.name ?? "Unknown"}
+                            </span>
+                          </div>
+                          <div className="rounded-2xl bg-white p-3 ring-1 ring-blue-100">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">Created</span>
+                            <span className="mt-1 block font-semibold text-slate-800">{formatDate(roleplay.createdAt)}</span>
+                          </div>
+                          <div className="rounded-2xl bg-white p-3 ring-1 ring-blue-100">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">Assigned</span>
+                            <span className="mt-1 block font-semibold text-slate-800">
+                              {roleplay.settings.assignedTraineeIds?.length ?? 0} users
+                            </span>
+                          </div>
+                          <div className="rounded-2xl bg-white p-3 ring-1 ring-blue-100">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">Exam Takers</span>
+                            <span className="mt-1 block font-semibold text-slate-800">
+                              {courseAssessments.length}
+                            </span>
+                          </div>
+                          <div className="rounded-2xl bg-white p-3 ring-1 ring-blue-100">
+                            <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">Avg Score</span>
+                            <span className="mt-1 block font-semibold text-slate-800">
+                              {averageScore === null ? "N/A" : `${averageScore}%`}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex shrink-0 flex-wrap gap-2 xl:max-w-xs xl:justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedCourseId(isExpanded ? null : roleplay.id)}
+                          className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                        >
+                          {isExpanded ? "Hide Scores" : "View Scores"}
+                        </button>
+                        {roleplay.status === "draft" ? (
+                          <button
+                            type="button"
+                            onClick={() => void updateCourseStatus(roleplay.id, "published")}
+                            className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
+                          >
+                            Publish
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void updateCourseStatus(roleplay.id, "draft")}
+                            className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+                          >
+                            Unpublish
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void deleteCourse(roleplay.id)}
+                          className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-5 rounded-3xl border border-blue-100 bg-white p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <h4 className="font-semibold text-slate-950">Users who took this exam</h4>
+                          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                            {courseAssessments.length} saved scores
+                          </span>
+                        </div>
+                        {courseAssessments.length === 0 ? (
+                          <p className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+                            No users have completed this course exam yet.
+                          </p>
+                        ) : (
+                          <div className="mt-4 overflow-x-auto">
+                            <table className="w-full min-w-[720px] text-left text-sm">
+                              <thead className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                                <tr>
+                                  <th className="border-b border-blue-100 px-3 py-3">User</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Email</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Score</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Outcome</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Completed</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Review</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {courseAssessments.map((assessment) => (
+                                  <tr key={assessment.id} className="text-slate-700">
+                                    <td className="border-b border-blue-50 px-3 py-3 font-semibold text-slate-950">
+                                      {learnerName(assessment)}
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3">
+                                      {assessment.learnerEmail ?? "Not recorded"}
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3 font-semibold">
+                                      {assessment.overallScore}%
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3">
+                                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${outcomeClass(assessment.outcome)}`}>
+                                        {assessment.outcome === "passed" ? "Passed" : "Needs Review"}
+                                      </span>
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3">
+                                      {formatDate(assessment.createdAt)}
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3">
+                                      <Link className="font-semibold text-primary hover:text-blue-700" href={`/assessment/${assessment.id}`}>
+                                        Open
+                                      </Link>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })
+            )}
+          </div>
+        </section>
+      )}
+
+      {isCreateUserOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <form
+            onSubmit={(event) => void createUser(event)}
+            className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl"
+          >
+            <p className="text-xs uppercase tracking-[0.24em] text-primary">Add User</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+              Create account access
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Add a user to the table with a role and temporary password.
+            </p>
+            <div className="mt-5 space-y-4">
+              <label className="block text-sm font-semibold text-slate-700">
+                Full name
+                <input
+                  autoFocus
+                  value={userForm.name}
+                  onChange={(event) =>
+                    setUserForm((current) => ({ ...current, name: event.target.value }))
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                  placeholder="Jane Trainee"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Email
+                <input
+                  type="email"
+                  value={userForm.email}
+                  onChange={(event) =>
+                    setUserForm((current) => ({ ...current, email: event.target.value }))
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                  placeholder="jane@cse.local"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Role
+                <select
+                  value={userForm.role}
+                  onChange={(event) =>
+                    setUserForm((current) => ({ ...current, role: event.target.value as MockRole }))
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                >
+                  <option value="trainee">Trainee</option>
+                  <option value="course_admin">Course Admin</option>
+                  <option value="root_admin">Root Admin</option>
+                </select>
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Temporary Password
+                <input
+                  type="password"
+                  value={userForm.password}
+                  onChange={(event) =>
+                    setUserForm((current) => ({ ...current, password: event.target.value }))
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                  placeholder="At least 8 characters"
+                />
+              </label>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsCreateUserOpen(false)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+              >
+                Create User
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <form
+            onSubmit={(event) => void submitUserEdit(event)}
+            className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl"
+          >
+            <p className="text-xs uppercase tracking-[0.24em] text-primary">Edit User</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+              User details
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Update the user's name, email, and role from the simplified table.
+            </p>
+            <div className="mt-5 space-y-4">
+              <label className="block text-sm font-semibold text-slate-700">
+                Full name
+                <input
+                  autoFocus
+                  value={editDialog.name}
+                  onChange={(event) =>
+                    setEditDialog((current) =>
+                      current ? { ...current, name: event.target.value } : current,
+                    )
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Email
+                <input
+                  type="email"
+                  value={editDialog.email}
+                  onChange={(event) =>
+                    setEditDialog((current) =>
+                      current ? { ...current, email: event.target.value } : current,
+                    )
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Role
+                <select
+                  value={editDialog.role}
+                  onChange={(event) =>
+                    setEditDialog((current) =>
+                      current ? { ...current, role: event.target.value as MockRole } : current,
+                    )
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                >
+                  <option value="trainee">Trainee</option>
+                  <option value="course_admin">Course Admin</option>
+                  <option value="root_admin">Root Admin</option>
+                </select>
+              </label>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    if (await deleteUser(editDialog.user.id)) {
+                      setEditDialog(null);
+                    }
+                  })();
+                }}
+                className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
+              >
+                Delete User
+              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditDialog(null)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}

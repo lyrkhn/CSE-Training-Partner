@@ -11,6 +11,7 @@ import type { MockRole } from "@/lib/types";
 import {
   AssessmentIcon,
   BuilderIcon,
+  ControlPanelIcon,
   CoursesIcon,
   DashboardIcon,
   LabIcon,
@@ -34,6 +35,8 @@ function iconFor(item: NavItem["icon"], className = "h-5 w-5") {
       return <LabIcon {...iconProps} />;
     case "builder":
       return <BuilderIcon {...iconProps} />;
+    case "control":
+      return <ControlPanelIcon {...iconProps} />;
     default:
       return <ProfileIcon {...iconProps} />;
   }

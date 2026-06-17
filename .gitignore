@@ -8,3 +8,4 @@ node_modules/
 data/transcripts/
 data/assessments/
 data/roleplays/
+data/users.json

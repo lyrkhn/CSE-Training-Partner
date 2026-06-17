@@ -1,12 +1,8 @@
 import type { CoachTurnFeedback, SavedFinalAssessment, TranscriptTurn } from "@/src/lib/assessments/types";
-
-type OpenAiChatResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string | null;
-    };
-  }>;
-};
+import {
+  generateJsonCompletion,
+  getFinalAssessmentLlmConfig,
+} from "@/src/lib/llm/jsonCompletion";
 
 type CoachTurnPayload = {
   whatWorked?: unknown;
@@ -76,29 +72,7 @@ export async function generateCoachTurnFeedback({
   previousCustomerTurn,
   nextCustomerTurn,
 }: GenerateCoachTurnFeedbackInput): Promise<CoachTurnFeedback> {
-  const provider = asString(
-    process.env.FINAL_ASSESSMENT_PROVIDER || process.env.OBJECTIVE_EVALUATOR_PROVIDER || "openai",
-  )
-    .trim()
-    .toLowerCase();
-  const apiKey = asString(
-    process.env.FINAL_ASSESSMENT_API_KEY || process.env.OBJECTIVE_EVALUATOR_API_KEY,
-  ).trim();
-  const model = asString(
-    process.env.FINAL_ASSESSMENT_MODEL ||
-      process.env.OBJECTIVE_EVALUATOR_MODEL ||
-      "gpt-5.4-mini",
-  ).trim();
-
-  if (provider !== "openai") {
-    throw new Error("Unsupported coach feedback provider. Currently supported: openai.");
-  }
-
-  if (!apiKey || !model) {
-    throw new Error(
-      "FINAL_ASSESSMENT_API_KEY/FINAL_ASSESSMENT_MODEL or OBJECTIVE_EVALUATOR_API_KEY/OBJECTIVE_EVALUATOR_MODEL are required for coach feedback.",
-    );
-  }
+  const llmConfig = getFinalAssessmentLlmConfig();
 
   const prompt = [
     "You are a concise but helpful roleplay coach for a customer-facing training simulation.",
@@ -149,42 +123,19 @@ export async function generateCoachTurnFeedback({
     },
   };
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const content = await generateJsonCompletion({
+    config: llmConfig,
+    systemPrompt: prompt,
+    userPayload,
+    temperature: 0.2,
+    responseFormat: {
+      type: "json_schema",
+      name: "turn_coach_feedback",
+      strict: true,
+      schema: coachFeedbackSchema(),
     },
-    body: JSON.stringify({
-      model,
-      temperature: 0.2,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "turn_coach_feedback",
-          strict: true,
-          schema: coachFeedbackSchema(),
-        },
-      },
-      messages: [
-        { role: "system", content: prompt },
-        { role: "user", content: JSON.stringify(userPayload) },
-      ],
-    }),
-    cache: "no-store",
+    errorLabel: "AI coach feedback",
   });
-
-  if (!response.ok) {
-    const details = await response.text().catch(() => "");
-    throw new Error(`AI coach feedback failed with HTTP ${response.status}. ${details}`);
-  }
-
-  const payload = (await response.json()) as OpenAiChatResponse;
-  const content = asString(payload.choices?.[0]?.message?.content).trim();
-  if (!content) {
-    throw new Error("AI coach feedback returned an empty response.");
-  }
 
   return parseCoachFeedback(content, selectedTurn.id);
 }
-

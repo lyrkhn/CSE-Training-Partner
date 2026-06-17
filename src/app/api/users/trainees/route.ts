@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { alphaUsers } from "@/src/lib/auth/alphaUsers";
+import { listAuthUsers } from "@/src/lib/auth/userStore";
 import { getAuthSession } from "@/src/lib/auth/session";
 
 export async function GET() {
@@ -11,14 +11,6 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    users: alphaUsers
-      .filter((user) => user.role === "trainee")
-      .map((user) => ({
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      })),
+    users: listAuthUsers().filter((user) => user.role === "trainee"),
   });
 }
-

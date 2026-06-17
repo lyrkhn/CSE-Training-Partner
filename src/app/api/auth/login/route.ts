@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { findAlphaUserByCredentials } from "@/src/lib/auth/alphaUsers";
+import { findAuthUserByCredentials } from "@/src/lib/auth/userStore";
 import { sessionCookieName } from "@/src/lib/auth/constants";
 import { createSessionToken, sessionCookieOptions } from "@/src/lib/auth/session";
 
@@ -15,7 +15,7 @@ function asString(value: unknown) {
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as LoginBody;
-  const user = findAlphaUserByCredentials(asString(body.email), asString(body.password));
+  const user = findAuthUserByCredentials(asString(body.email), asString(body.password));
 
   if (!user) {
     return NextResponse.json({ error: "Invalid email or password." }, { status: 401 });

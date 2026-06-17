@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { generateFinalAssessment } from "@/src/lib/assessments/generator";
 import { saveFinalAssessment } from "@/src/lib/assessments/storage";
 import type { GenerateAssessmentInput } from "@/src/lib/assessments/types";
+import { getAuthSession } from "@/src/lib/auth/session";
 import type { Objective } from "@/src/lib/objectives/types";
 import type { TranscriptEntry } from "@/src/lib/transcripts/types";
 
@@ -93,11 +94,15 @@ function asTranscriptEntries(value: unknown): TranscriptEntry[] {
 
 export async function POST(request: Request) {
   try {
+    const session = await getAuthSession();
     const body = (await request.json().catch(() => ({}))) as GenerateAssessmentBody;
     const input: GenerateAssessmentInput = {
       transcriptSessionId: asString(body.transcriptSessionId),
       scenarioId: asString(body.scenarioId),
       scenarioTitle: asString(body.scenarioTitle),
+      learnerId: session?.id,
+      learnerName: session?.name,
+      learnerEmail: session?.email,
       learnerRole: asString(body.learnerRole) || undefined,
       objectives: asObjectives(body.objectives),
       transcript: asTranscriptEntries(body.transcript),

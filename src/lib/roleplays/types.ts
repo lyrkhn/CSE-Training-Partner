@@ -7,6 +7,18 @@ export type RolePlayConfig = {
   status: RolePlayStatus;
   createdAt?: string;
   updatedAt?: string;
+  createdBy?: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+  };
+  updatedBy?: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+  };
   plan: {
     scenario: string;
     learnerRole: string;

@@ -40,7 +40,7 @@ const defaultObjectives: Objective[] = [
 const steps = ["Plan Role Play", "AI Character Customization", "Role Play Settings"];
 
 type BuilderAction = "draft" | "publish" | "preview";
-type BuilderActionPhase = "loading" | "success";
+type BuilderActionPhase = "loading" | "completing" | "success";
 
 type AssignableTrainee = {
   id: string;
@@ -106,13 +106,23 @@ export function RolePlayBuilder({
       return;
     }
 
-    setActionProgress(12);
+    if (builderActionPhase !== "loading") {
+      return;
+    }
+
+    setActionProgress((current) => Math.max(current, 12));
     const interval = window.setInterval(() => {
-      setActionProgress((current) => Math.min(88, current + Math.max(1.5, (100 - current) * 0.1)));
+      setActionProgress((current) => {
+        if (current >= 88) {
+          return current;
+        }
+
+        return Math.min(88, current + Math.max(1.5, (100 - current) * 0.1));
+      });
     }, 220);
 
     return () => window.clearInterval(interval);
-  }, [activeBuilderAction]);
+  }, [activeBuilderAction, builderActionPhase]);
 
   useEffect(() => {
     void (async () => {
@@ -234,6 +244,7 @@ export function RolePlayBuilder({
   }
 
   async function completeBuilderAction(message: string) {
+    setBuilderActionPhase("completing");
     setActionProgress((current) => Math.max(current, 94));
     await wait(350);
     setActionProgress(100);

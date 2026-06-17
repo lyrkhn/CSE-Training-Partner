@@ -43,6 +43,9 @@ model FinalAssessment {
   transcriptSessionId String
   scenarioId          String
   scenarioTitle       String
+  learnerId           String?
+  learnerName         String?
+  learnerEmail        String?
   learnerRole         String?
   overallScore        Int
   outcome             String

@@ -30,6 +30,24 @@ export const navigationItems: NavItem[] = [
     ],
   },
   { title: "Assessment Results", href: "/assessment", icon: "assessment" },
+  {
+    title: "Control Panel",
+    href: "/control-panel",
+    icon: "control",
+    allowedRoles: ["root_admin", "course_admin"],
+    children: [
+      {
+        title: "User Management",
+        href: "/control-panel/users",
+        allowedRoles: ["root_admin", "course_admin"],
+      },
+      {
+        title: "Course List",
+        href: "/control-panel/courses",
+        allowedRoles: ["root_admin", "course_admin"],
+      },
+    ],
+  },
   { title: "Profile", href: "/profile", icon: "profile" },
 ];
 

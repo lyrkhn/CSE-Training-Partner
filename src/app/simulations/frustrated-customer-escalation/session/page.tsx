@@ -1633,9 +1633,9 @@ export default function FrustratedCustomerEscalationSessionPage() {
                 <p>ASR provider: {startResponse?.configSummary.asrProvider ?? "not mapped yet"}</p>
                 <p>ASR language: {startResponse?.configSummary.asrLanguage ?? "en-US"}</p>
                 <p>LLM provider: {startResponse?.configSummary.llmProvider ?? "not mapped yet"}</p>
-                <p>LLM preset: {startResponse?.configSummary.llmPreset ?? "openai_gpt_4o_mini"}</p>
+                <p>LLM preset: {startResponse?.configSummary.llmPreset ?? "not started yet"}</p>
                 <p>TTS provider: {startResponse?.configSummary.ttsProvider ?? "not mapped yet"}</p>
-                <p>TTS model: {startResponse?.configSummary.ttsModel ?? "eleven_flash_v2_5"}</p>
+                <p>TTS model: {startResponse?.configSummary.ttsModel ?? "not started yet"}</p>
                 <p>
                   RTC token: {startResponse?.configSummary.rtcTokenGenerated ? "generated" : "not generated"}
                 </p>

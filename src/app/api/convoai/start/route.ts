@@ -27,16 +27,13 @@ type ConvoAiJoinPayload = {
     enable_string_uid: boolean;
     idle_timeout: number;
     llm: {
-      url: string;
-      api_key: string;
-      params: {
-        model: string;
-      };
       system_messages: Array<{
         role: "system";
         content: string;
       }>;
+      max_history: number;
       greeting_message: string;
+      failure_message: string;
       greeting_configs: {
         mode: string;
         delay_ms: number;
@@ -120,14 +117,9 @@ export async function POST(request: Request) {
   const appCertificate = process.env.AGORA_APP_CERTIFICATE ?? "";
   const customerId = process.env.AGORA_CUSTOMER_ID ?? "";
   const customerSecret = process.env.AGORA_CUSTOMER_SECRET ?? "";
+  const llmPreset = "openai_gpt_4o_mini";
   const ttsPreset = "minimax_speech_2_8_turbo";
   const ttsVoiceId = asString(process.env.CONVOAI_TTS_VOICE).trim();
-  const llmApiKey = asString(process.env.CONVOAI_LLM_API_KEY).trim();
-  const llmUrl = withDefault(
-    process.env.CONVOAI_LLM_URL,
-    "https://api.openai.com/v1/chat/completions",
-  );
-  const llmModel = "gpt-4o-mini";
 
   const baseUrl = withDefault(
     process.env.CONVOAI_BASE_URL,
@@ -153,16 +145,6 @@ export async function POST(request: Request) {
       {
         error:
           "AGORA_CUSTOMER_ID and AGORA_CUSTOMER_SECRET are required on the server.",
-      },
-      { status: 500 },
-    );
-  }
-
-  if (!llmApiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "CONVOAI_LLM_API_KEY is required when LLM is not provided by a preset.",
       },
       { status: 500 },
     );
@@ -194,8 +176,7 @@ export async function POST(request: Request) {
 
   const joinPayload: ConvoAiJoinPayload = {
     name: `frustrated-customer-escalation-${Date.now()}`,
-    // For preset mode, using only one TTS preset is valid.
-    preset: ttsPreset,
+    preset: `${llmPreset},${ttsPreset}`,
     properties: {
       channel: channelName,
       token: agentRtcToken,
@@ -204,18 +185,15 @@ export async function POST(request: Request) {
       enable_string_uid: false,
       idle_timeout: 120,
       llm: {
-        url: llmUrl,
-        api_key: llmApiKey,
-        params: {
-          model: llmModel,
-        },
         system_messages: [
           {
             role: "system",
             content: systemMessage,
           },
         ],
+        max_history: 32,
         greeting_message: greetingMessage,
+        failure_message: "Please hold on a second.",
         greeting_configs: {
           mode: greetingMessageSwitch,
           delay_ms: delayMs,
@@ -297,9 +275,9 @@ export async function POST(request: Request) {
     configSummary: {
       greeting_message_switch: greetingMessageSwitch,
       delay_ms: delayMs,
-      llmProvider: "openai",
-      llmPreset: null,
-      llmModel,
+      llmProvider: "preset",
+      llmPreset,
+      llmModel: llmPreset,
       asrProvider: "ares",
       asrLanguage: "en-US",
       ttsProvider: "preset",

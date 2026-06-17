@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { cookies } from "next/headers";
 
-import { findAlphaUserById } from "@/src/lib/auth/alphaUsers";
+import { findAuthUserById } from "@/src/lib/auth/userStore";
 import { sessionCookieName } from "@/src/lib/auth/constants";
 import type { MockRole } from "@/lib/types";
 
@@ -68,7 +68,7 @@ export function readSessionToken(token: string | undefined | null): AuthSessionU
       return null;
     }
 
-    const user = findAlphaUserById(payload.userId);
+    const user = findAuthUserById(payload.userId);
     if (!user) {
       return null;
     }
