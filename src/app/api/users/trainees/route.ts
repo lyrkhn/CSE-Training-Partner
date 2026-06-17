@@ -10,7 +10,9 @@ export async function GET() {
     return NextResponse.json({ error: "Admin access required." }, { status: 403 });
   }
 
+  const users = await listAuthUsers();
+
   return NextResponse.json({
-    users: listAuthUsers().filter((user) => user.role === "trainee"),
+    users: users.filter((user) => user.role === "trainee"),
   });
 }

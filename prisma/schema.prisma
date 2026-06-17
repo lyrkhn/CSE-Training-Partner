@@ -7,6 +7,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model AppUser {
+  id           String   @id
+  email        String   @unique
+  name         String
+  position     String?
+  role         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([role])
+  @@index([updatedAt])
+}
+
 model RolePlay {
   id                 String   @id
   status             String

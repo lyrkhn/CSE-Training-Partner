@@ -13,6 +13,7 @@ type ControlPanelSection = "users" | "courses";
 type UserForm = {
   name: string;
   email: string;
+  position: string;
   role: MockRole;
   password: string;
 };
@@ -21,12 +22,14 @@ type EditDialogState = {
   user: SafeAuthUser;
   name: string;
   email: string;
+  position: string;
   role: MockRole;
 };
 
 const defaultUserForm: UserForm = {
   name: "",
   email: "",
+  position: "",
   role: "trainee",
   password: "",
 };
@@ -166,7 +169,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
     }
 
     return users.filter((user) =>
-      [user.name, user.email, roleLabel(user.role), user.source]
+      [user.name, user.email, user.position, roleLabel(user.role), user.source]
         .join(" ")
         .toLowerCase()
         .includes(query),
@@ -227,6 +230,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
       body: JSON.stringify({
         email: editDialog.email,
         name: editDialog.name,
+        position: editDialog.position,
         role: editDialog.role,
       }),
     });
@@ -419,7 +423,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                     value={userSearchQuery}
                     onChange={(event) => setUserSearchQuery(event.target.value)}
                     className="w-full bg-transparent text-slate-700 outline-none placeholder:text-slate-400"
-                    placeholder="Name, email, or role"
+                    placeholder="Name, email, position, or role"
                   />
                 </label>
                 <button
@@ -434,11 +438,12 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] border-separate border-spacing-0 text-left text-sm">
+            <table className="w-full min-w-[1040px] border-separate border-spacing-0 text-left text-sm">
               <thead className="bg-slate-50 text-slate-500">
                 <tr>
                   <th className="border-b border-slate-200 px-5 py-3 font-medium">Full name</th>
                   <th className="border-b border-slate-200 px-5 py-3 font-medium">Email</th>
+                  <th className="border-b border-slate-200 px-5 py-3 font-medium">Position</th>
                   <th className="border-b border-slate-200 px-5 py-3 font-medium">Role</th>
                   <th className="border-b border-slate-200 px-5 py-3 font-medium">Status</th>
                   <th className="border-b border-slate-200 px-5 py-3 font-medium">Joined date</th>
@@ -450,7 +455,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
               <tbody>
                 {filteredUsers.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-5 py-12 text-center text-sm text-slate-500">
+                    <td colSpan={7} className="px-5 py-12 text-center text-sm text-slate-500">
                       No users match your search.
                     </td>
                   </tr>
@@ -464,6 +469,9 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                         <span className="text-slate-600 underline decoration-slate-300 underline-offset-4">
                           {user.email}
                         </span>
+                      </td>
+                      <td className="border-b border-slate-100 px-5 py-3 text-slate-600">
+                        {user.position || "Not set"}
                       </td>
                       <td className="border-b border-slate-100 px-5 py-3 text-slate-600">
                         {roleLabel(user.role)}
@@ -486,6 +494,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                                 user,
                                 email: user.email,
                                 name: user.name,
+                                position: user.position ?? "",
                                 role: user.role,
                               })
                             }
@@ -743,6 +752,17 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                 />
               </label>
               <label className="block text-sm font-semibold text-slate-700">
+                Position
+                <input
+                  value={userForm.position}
+                  onChange={(event) =>
+                    setUserForm((current) => ({ ...current, position: event.target.value }))
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                  placeholder="Customer Support Engineer"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
                 Role
                 <select
                   value={userForm.role}
@@ -829,6 +849,19 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                 />
               </label>
               <label className="block text-sm font-semibold text-slate-700">
+                Position
+                <input
+                  value={editDialog.position}
+                  onChange={(event) =>
+                    setEditDialog((current) =>
+                      current ? { ...current, position: event.target.value } : current,
+                    )
+                  }
+                  className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none transition focus:border-primary"
+                  placeholder="Customer Support Engineer"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
                 Role
                 <select
                   value={editDialog.role}
@@ -888,6 +921,7 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
             <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
               <p className="font-semibold text-slate-950">{deleteDialog.name}</p>
               <p className="mt-1">{deleteDialog.email}</p>
+              <p className="mt-1">{deleteDialog.position || "No position set"}</p>
               <p className="mt-1">{roleLabel(deleteDialog.role)}</p>
             </div>
             <div className="mt-6 flex flex-wrap justify-end gap-2">

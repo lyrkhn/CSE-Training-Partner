@@ -17,6 +17,7 @@ type RouteContext = {
 type UpdateUserBody = {
   email?: unknown;
   name?: unknown;
+  position?: unknown;
   password?: unknown;
   role?: unknown;
 };
@@ -43,7 +44,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Admin access required." }, { status: 403 });
   }
 
-  const targetUser = findAuthUserById(id);
+  const targetUser = await findAuthUserById(id);
   if (!targetUser) {
     return NextResponse.json({ error: "User not found." }, { status: 404 });
   }
@@ -52,8 +53,9 @@ export async function PATCH(request: Request, context: RouteContext) {
   const nextRole = asRole(body.role);
   const nextName = asString(body.name);
   const nextEmail = asString(body.email);
+  const nextPosition = asString(body.position);
 
-  if (nextName || nextEmail) {
+  if (nextName || nextEmail || typeof body.position === "string") {
     const role = nextRole ?? targetUser.role;
     const roleChanged = role !== targetUser.role;
 
@@ -76,9 +78,10 @@ export async function PATCH(request: Request, context: RouteContext) {
     }
 
     try {
-      const user = updateAuthUserDetails(id, {
+      const user = await updateAuthUserDetails(id, {
         email: nextEmail,
         name: nextName,
+        position: nextPosition,
         role,
       });
       if (!user) {
@@ -106,7 +109,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "You cannot change your own role." }, { status: 400 });
     }
 
-    const user = changeAuthUserRole(id, nextRole);
+    const user = await changeAuthUserRole(id, nextRole);
     if (!user) {
       return NextResponse.json({ error: "User not found." }, { status: 404 });
     }
@@ -122,7 +125,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   try {
-    const user = changeAuthUserPassword(id, asString(body.password));
+    const user = await changeAuthUserPassword(id, asString(body.password));
     if (!user) {
       return NextResponse.json({ error: "User not found." }, { status: 404 });
     }
@@ -148,7 +151,7 @@ export async function DELETE(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "You cannot delete your own signed-in user." }, { status: 400 });
   }
 
-  const targetUser = findAuthUserById(id);
+  const targetUser = await findAuthUserById(id);
   if (!targetUser) {
     return NextResponse.json({ error: "User not found." }, { status: 404 });
   }
@@ -160,7 +163,7 @@ export async function DELETE(_request: Request, context: RouteContext) {
     );
   }
 
-  const deleted = deleteAuthUser(id);
+  const deleted = await deleteAuthUser(id);
   if (!deleted) {
     return NextResponse.json(
       { error: "User could not be deleted. The root admin seed user is protected." },

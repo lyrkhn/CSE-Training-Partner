@@ -52,7 +52,7 @@ export function createSessionToken(userId: string) {
   return `${encodedPayload}.${sign(encodedPayload)}`;
 }
 
-export function readSessionToken(token: string | undefined | null): AuthSessionUser | null {
+export async function readSessionToken(token: string | undefined | null): Promise<AuthSessionUser | null> {
   if (!token) {
     return null;
   }
@@ -68,7 +68,7 @@ export function readSessionToken(token: string | undefined | null): AuthSessionU
       return null;
     }
 
-    const user = findAuthUserById(payload.userId);
+    const user = await findAuthUserById(payload.userId);
     if (!user) {
       return null;
     }

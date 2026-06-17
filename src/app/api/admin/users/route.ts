@@ -7,6 +7,7 @@ import type { MockRole } from "@/lib/types";
 type CreateUserBody = {
   email?: unknown;
   name?: unknown;
+  position?: unknown;
   role?: unknown;
   password?: unknown;
 };
@@ -32,7 +33,7 @@ export async function GET() {
     return NextResponse.json({ error: "Admin access required." }, { status: 403 });
   }
 
-  return NextResponse.json({ users: listAuthUsers() });
+  return NextResponse.json({ users: await listAuthUsers() });
 }
 
 export async function POST(request: Request) {
@@ -57,9 +58,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const user = createAuthUser({
+    const user = await createAuthUser({
       email: asString(body.email),
       name: asString(body.name),
+      position: asString(body.position),
       role,
       password: asString(body.password),
     });

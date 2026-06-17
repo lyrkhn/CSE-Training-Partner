@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 import { alphaUsers, type AlphaUser } from "@/src/lib/auth/alphaUsers";
+import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
 import { dataPath } from "@/src/lib/storage/dataDir";
 import type { MockRole } from "@/lib/types";
 
@@ -10,6 +11,7 @@ export type SafeAuthUser = {
   id: string;
   email: string;
   name: string;
+  position?: string;
   role: MockRole;
   createdAt?: string;
   updatedAt?: string;
@@ -20,6 +22,7 @@ type ManagedUserRecord = {
   id: string;
   email: string;
   name: string;
+  position?: string;
   role: MockRole;
   passwordHash: string;
   createdAt: string;
@@ -31,10 +34,18 @@ type UserStoreFile = {
   disabledSeedUserIds: string[];
   seedPasswordOverrides: Record<string, string>;
   seedRoleOverrides: Record<string, MockRole>;
-  seedProfileOverrides: Record<string, { email?: string; name?: string }>;
+  seedProfileOverrides: Record<string, { email?: string; name?: string; position?: string }>;
 };
 
-type AuthUserRecord = AlphaUser | ManagedUserRecord;
+type AuthUserRecord = {
+  id: string;
+  email: string;
+  name: string;
+  position?: string | null;
+  role: MockRole | string;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+};
 
 const usersDir = dataPath();
 const usersFilePath = path.join(usersDir, "users.json");
@@ -111,8 +122,17 @@ function activeSeedUsers(store = readStore()) {
       ...user,
       email: store.seedProfileOverrides[user.id]?.email ?? user.email,
       name: store.seedProfileOverrides[user.id]?.name ?? user.name,
+      position: store.seedProfileOverrides[user.id]?.position ?? user.position,
       role: store.seedRoleOverrides[user.id] ?? user.role,
     }));
+}
+
+function toIsoString(value: string | Date | undefined) {
+  if (!value) {
+    return undefined;
+  }
+
+  return typeof value === "string" ? value : value.toISOString();
 }
 
 function toSafeUser(user: AuthUserRecord, source: SafeAuthUser["source"]): SafeAuthUser {
@@ -120,9 +140,10 @@ function toSafeUser(user: AuthUserRecord, source: SafeAuthUser["source"]): SafeA
     id: user.id,
     email: user.email,
     name: user.name,
-    role: user.role,
-    createdAt: "createdAt" in user ? user.createdAt : undefined,
-    updatedAt: "updatedAt" in user ? user.updatedAt : undefined,
+    position: user.position ?? undefined,
+    role: isMockRole(user.role) ? user.role : "trainee",
+    createdAt: toIsoString(user.createdAt),
+    updatedAt: toIsoString(user.updatedAt),
     source,
   };
 }
@@ -131,16 +152,27 @@ function isMockRole(value: unknown): value is MockRole {
   return value === "root_admin" || value === "course_admin" || value === "trainee";
 }
 
-export function listAuthUsers() {
+export async function listAuthUsers() {
   const store = readStore();
+  const managedUsers = isDatabaseConfigured()
+    ? await prisma.appUser.findMany({ orderBy: { name: "asc" } })
+    : store.managedUsers;
+
   return [
     ...activeSeedUsers(store).map((user) => toSafeUser(user, "seed")),
-    ...store.managedUsers.map((user) => toSafeUser(user, "managed")),
+    ...managedUsers.map((user) => toSafeUser(user, "managed")),
   ].sort((first, second) => first.name.localeCompare(second.name));
 }
 
-export function findAuthUserById(userId: string) {
+export async function findAuthUserById(userId: string) {
   const store = readStore();
+  if (isDatabaseConfigured()) {
+    const managedUser = await prisma.appUser.findUnique({ where: { id: userId } });
+    if (managedUser) {
+      return toSafeUser(managedUser, "managed");
+    }
+  }
+
   const managedUser = store.managedUsers.find((user) => user.id === userId);
   if (managedUser) {
     return toSafeUser(managedUser, "managed");
@@ -150,7 +182,7 @@ export function findAuthUserById(userId: string) {
   return seedUser ? toSafeUser(seedUser, "seed") : null;
 }
 
-export function findAuthUserByCredentials(email: string, password: string) {
+export async function findAuthUserByCredentials(email: string, password: string) {
   const normalizedEmail = normalizeEmail(email);
   const store = readStore();
   const seedUser = activeSeedUsers(store).find((user) => user.email === normalizedEmail);
@@ -166,6 +198,13 @@ export function findAuthUserByCredentials(email: string, password: string) {
     }
   }
 
+  if (isDatabaseConfigured()) {
+    const managedUser = await prisma.appUser.findUnique({ where: { email: normalizedEmail } });
+    if (managedUser && verifyPasswordHash(password, managedUser.passwordHash)) {
+      return toSafeUser(managedUser, "managed");
+    }
+  }
+
   const managedUser = store.managedUsers.find((user) => user.email === normalizedEmail);
   if (managedUser && verifyPasswordHash(password, managedUser.passwordHash)) {
     return toSafeUser(managedUser, "managed");
@@ -174,14 +213,16 @@ export function findAuthUserByCredentials(email: string, password: string) {
   return null;
 }
 
-export function createAuthUser(input: {
+export async function createAuthUser(input: {
   email: string;
   name: string;
+  position?: string;
   role: MockRole;
   password: string;
 }) {
   const email = normalizeEmail(input.email);
   const name = input.name.trim();
+  const position = input.position?.trim() || "";
   const password = input.password;
 
   if (!email || !name || !isMockRole(input.role) || password.length < 8) {
@@ -189,21 +230,43 @@ export function createAuthUser(input: {
   }
 
   const store = readStore();
-  const emailExists = [...activeSeedUsers(store), ...store.managedUsers].some(
+  const seedOrFileEmailExists = [...activeSeedUsers(store), ...store.managedUsers].some(
     (user) => user.email === email,
   );
+  const dbEmailExists = isDatabaseConfigured()
+    ? Boolean(await prisma.appUser.findUnique({ where: { email } }))
+    : false;
 
-  if (emailExists) {
+  if (seedOrFileEmailExists || dbEmailExists) {
     throw new Error("A user with that email already exists.");
   }
 
   const now = new Date().toISOString();
+  const userId = `user-${Date.now()}-${randomBytes(4).toString("hex")}`;
+  const passwordHash = createPasswordHash(password);
+
+  if (isDatabaseConfigured()) {
+    const user = await prisma.appUser.create({
+      data: {
+        id: userId,
+        email,
+        name,
+        position,
+        role: input.role,
+        passwordHash,
+      },
+    });
+
+    return toSafeUser(user, "managed");
+  }
+
   const user: ManagedUserRecord = {
-    id: `user-${Date.now()}-${randomBytes(4).toString("hex")}`,
+    id: userId,
     email,
     name,
+    position,
     role: input.role,
-    passwordHash: createPasswordHash(password),
+    passwordHash,
     createdAt: now,
     updatedAt: now,
   };
@@ -212,12 +275,23 @@ export function createAuthUser(input: {
   return toSafeUser(user, "managed");
 }
 
-export function changeAuthUserPassword(userId: string, password: string) {
+export async function changeAuthUserPassword(userId: string, password: string) {
   if (password.length < 8) {
     throw new Error("Password must be at least 8 characters.");
   }
 
   const store = readStore();
+  if (isDatabaseConfigured()) {
+    const managedUser = await prisma.appUser.findUnique({ where: { id: userId } });
+    if (managedUser) {
+      const user = await prisma.appUser.update({
+        where: { id: userId },
+        data: { passwordHash: createPasswordHash(password) },
+      });
+      return toSafeUser(user, "managed");
+    }
+  }
+
   const managedUsers = store.managedUsers.map((user) =>
     user.id === userId
       ? { ...user, passwordHash: createPasswordHash(password), updatedAt: new Date().toISOString() }
@@ -244,12 +318,23 @@ export function changeAuthUserPassword(userId: string, password: string) {
   return findAuthUserById(userId);
 }
 
-export function changeAuthUserRole(userId: string, role: MockRole) {
+export async function changeAuthUserRole(userId: string, role: MockRole) {
   if (!isMockRole(role)) {
     throw new Error("Valid role is required.");
   }
 
   const store = readStore();
+  if (isDatabaseConfigured()) {
+    const managedUser = await prisma.appUser.findUnique({ where: { id: userId } });
+    if (managedUser) {
+      const user = await prisma.appUser.update({
+        where: { id: userId },
+        data: { role },
+      });
+      return toSafeUser(user, "managed");
+    }
+  }
+
   const managedUsers = store.managedUsers.map((user) =>
     user.id === userId ? { ...user, role, updatedAt: new Date().toISOString() } : user,
   );
@@ -274,31 +359,60 @@ export function changeAuthUserRole(userId: string, role: MockRole) {
   return findAuthUserById(userId);
 }
 
-export function updateAuthUserDetails(
+export async function updateAuthUserDetails(
   userId: string,
   input: {
     email: string;
     name: string;
+    position?: string;
     role: MockRole;
   },
 ) {
   const email = normalizeEmail(input.email);
   const name = input.name.trim();
+  const position = input.position?.trim() || "";
 
   if (!email || !name || !isMockRole(input.role)) {
     throw new Error("Name, valid email, and role are required.");
   }
 
   const store = readStore();
-  const allUsers = [...activeSeedUsers(store), ...store.managedUsers];
-  const emailExists = allUsers.some((user) => user.id !== userId && user.email === email);
-  if (emailExists) {
+  const allFileUsers = [...activeSeedUsers(store), ...store.managedUsers];
+  const fileEmailExists = allFileUsers.some((user) => user.id !== userId && user.email === email);
+  const dbEmailExists = isDatabaseConfigured()
+    ? Boolean(
+        await prisma.appUser.findFirst({
+          where: {
+            email,
+            NOT: { id: userId },
+          },
+        }),
+      )
+    : false;
+  if (fileEmailExists || dbEmailExists) {
     throw new Error("A user with that email already exists.");
+  }
+
+  if (isDatabaseConfigured()) {
+    const managedUser = await prisma.appUser.findUnique({ where: { id: userId } });
+    if (managedUser) {
+      const user = await prisma.appUser.update({
+        where: { id: userId },
+        data: {
+          email,
+          name,
+          position,
+          role: input.role,
+        },
+      });
+
+      return toSafeUser(user, "managed");
+    }
   }
 
   const managedUsers = store.managedUsers.map((user) =>
     user.id === userId
-      ? { ...user, email, name, role: input.role, updatedAt: new Date().toISOString() }
+      ? { ...user, email, name, position, role: input.role, updatedAt: new Date().toISOString() }
       : user,
   );
 
@@ -320,14 +434,23 @@ export function updateAuthUserDetails(
     },
     seedProfileOverrides: {
       ...store.seedProfileOverrides,
-      [userId]: { email, name },
+      [userId]: { email, name, position },
     },
   });
   return findAuthUserById(userId);
 }
 
-export function deleteAuthUser(userId: string) {
+export async function deleteAuthUser(userId: string) {
   const store = readStore();
+  if (isDatabaseConfigured()) {
+    try {
+      await prisma.appUser.delete({ where: { id: userId } });
+      return true;
+    } catch {
+      // Continue to seed/file fallback if this was not a managed database user.
+    }
+  }
+
   const managedUsers = store.managedUsers.filter((user) => user.id !== userId);
 
   if (managedUsers.length !== store.managedUsers.length) {

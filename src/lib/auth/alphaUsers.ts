@@ -4,6 +4,7 @@ export type AlphaUser = {
   id: string;
   email: string;
   name: string;
+  position?: string;
   role: MockRole;
   password: string;
 };
@@ -22,6 +23,7 @@ export const alphaUsers: AlphaUser[] = [
     id: "alpha-root-admin",
     email: alphaValue("ALPHA_ROOT_ADMIN_EMAIL", "root.admin@cse.local"),
     name: "Root Admin",
+    position: "Platform Owner",
     role: "root_admin",
     password: alphaValue("ALPHA_ROOT_ADMIN_PASSWORD", "P@ssword1"),
   },
@@ -29,6 +31,7 @@ export const alphaUsers: AlphaUser[] = [
     id: "alpha-course-admin",
     email: alphaValue("ALPHA_COURSE_ADMIN_EMAIL", "course.admin@cse.local"),
     name: "Course Admin",
+    position: "Training Manager",
     role: "course_admin",
     password: alphaValue("ALPHA_COURSE_ADMIN_PASSWORD", "P@ssword1"),
   },
@@ -36,6 +39,7 @@ export const alphaUsers: AlphaUser[] = [
     id: "alpha-trainee-1",
     email: alphaValue("ALPHA_TRAINEE_1_EMAIL", "trainee1@cse.local"),
     name: "Manny Pacquiao",
+    position: "Support Engineer",
     role: "trainee",
     password: alphaValue("ALPHA_TRAINEE_1_PASSWORD", "P@ssword1"),
   },
@@ -43,6 +47,7 @@ export const alphaUsers: AlphaUser[] = [
     id: "alpha-trainee-2",
     email: alphaValue("ALPHA_TRAINEE_2_EMAIL", "trainee2@cse.local"),
     name: "Ben Reilly",
+    position: "Customer Success Specialist",
     role: "trainee",
     password: alphaValue("ALPHA_TRAINEE_2_PASSWORD", "P@ssword1"),
   },
