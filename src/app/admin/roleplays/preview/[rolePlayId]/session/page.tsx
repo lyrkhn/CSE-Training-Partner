@@ -17,7 +17,7 @@ import {
 } from "@/src/lib/convoai/transcriptMapper";
 import type { AuthSessionUser } from "@/src/lib/auth/session";
 import type { Objective, TranscriptEntry } from "@/src/lib/objectives/types";
-import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import { canUserAccessRolePlay, canUserTakeRolePlay } from "@/src/lib/roleplays/access";
 import {
   completeRolePlayAttempt,
   fetchRolePlayAttemptStatus,
@@ -229,7 +229,9 @@ export default function RolePlayPreviewSessionPage() {
     : 0;
   const aiSpeaking = visualAiVolume > 0.04;
   const traineeSpeaking = traineeFillLevel > 0.03;
-  const isTrainee = sessionUser?.role === "trainee";
+  const isAssignedLearner = Boolean(
+    config && sessionUser && canUserTakeRolePlay(sessionUser, config),
+  );
 
   useEffect(() => {
     void (async () => {
@@ -286,7 +288,7 @@ export default function RolePlayPreviewSessionPage() {
     }
 
     setAccessDenied(!canUserAccessRolePlay(sessionUser, config));
-    if (sessionUser.role === "trainee") {
+    if (canUserTakeRolePlay(sessionUser, config)) {
       let active = true;
       setAttemptStatus(null);
       void fetchRolePlayAttemptStatus(sessionUser.id, config.id).then((nextAttemptStatus) => {
@@ -443,12 +445,12 @@ export default function RolePlayPreviewSessionPage() {
 
   async function startVoiceRolePlay(activeConfig: RolePlayConfig) {
     if (isStarting || callStatus === "In Call") return;
-    if (isTrainee && !attemptStatus) {
+    if (isAssignedLearner && !attemptStatus) {
       setErrorMessage("Checking attempt eligibility. Please try again in a moment.");
       return;
     }
-    if (isTrainee && attemptStatus?.locked) {
-      setErrorMessage("This roleplay is locked because both trainee attempts have been used.");
+    if (isAssignedLearner && attemptStatus?.locked) {
+      setErrorMessage("This roleplay is locked because both learner attempts have been used.");
       return;
     }
 
@@ -729,7 +731,7 @@ export default function RolePlayPreviewSessionPage() {
     }
 
     await cleanupVoiceRolePlay(true);
-    if (isTrainee && config && sessionUser && !attemptRecordedRef.current) {
+    if (isAssignedLearner && config && sessionUser && !attemptRecordedRef.current) {
       attemptRecordedRef.current = true;
       setAttemptStatus(await completeRolePlayAttempt(sessionUser.id, config.id));
     }
@@ -758,13 +760,13 @@ export default function RolePlayPreviewSessionPage() {
 
   useEffect(() => {
     if (!config || !sessionUser || accessDenied || startAttemptedRef.current) return;
-    if (sessionUser.role === "trainee") {
+    if (isAssignedLearner) {
       if (!attemptStatus) return;
       if (attemptStatus.locked) return;
     }
     startAttemptedRef.current = true;
     void startVoiceRolePlay(config);
-  }, [accessDenied, attemptStatus, config, sessionUser]);
+  }, [accessDenied, attemptStatus, config, isAssignedLearner, sessionUser]);
 
   useEffect(() => {
     return () => {
@@ -803,8 +805,8 @@ export default function RolePlayPreviewSessionPage() {
             This roleplay is not assigned to your account
           </h1>
           <p className="mt-3 text-sm leading-7">
-            Ask a course admin to assign this published course to your trainee account, or sign in
-            with an admin account to test the roleplay.
+            Ask a course admin to assign this published course to your learner account, or sign in
+            with an admin account to preview the roleplay.
           </p>
           <Link
             href="/courses"
@@ -817,7 +819,7 @@ export default function RolePlayPreviewSessionPage() {
     );
   }
 
-  if (isTrainee && attemptStatus?.locked && simulationState !== "finished") {
+  if (isAssignedLearner && attemptStatus?.locked && simulationState !== "finished") {
     return (
       <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8 text-slate-950">
         <div className="mx-auto max-w-2xl rounded-3xl border border-blue-100 bg-white p-8 text-center shadow-soft">
@@ -880,7 +882,7 @@ export default function RolePlayPreviewSessionPage() {
                 {learnerGoals.length}
               </span>{" "}
               total goals reviewed as guidance.
-              {isTrainee && attemptStatus && (
+              {isAssignedLearner && attemptStatus && (
                 <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
                   Attempt {attemptStatus.completedAttempts} of {attemptStatus.maxAttempts}
                   {attemptStatus.remainingAttempts > 0
@@ -912,7 +914,7 @@ export default function RolePlayPreviewSessionPage() {
                   View Final Assessment
                 </Link>
               )}
-              {isTrainee ? (
+              {isAssignedLearner ? (
                 <>
                   {attemptStatus && attemptStatus.remainingAttempts > 0 && (
                     <button

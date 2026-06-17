@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAuthSession } from "@/src/lib/auth/session";
-import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import { canUserAccessRolePlay, canUserTakeRolePlay } from "@/src/lib/roleplays/access";
 import {
   canPersistRolePlayAttempts,
   getServerRolePlayAttemptStatus,
@@ -37,7 +37,7 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Roleplay access denied." }, { status: 403 });
   }
 
-  if (session.role !== "trainee") {
+  if (!canUserTakeRolePlay(session, roleplay)) {
     return NextResponse.json({ attemptStatus: null, unlimited: true });
   }
 
@@ -51,10 +51,6 @@ export async function POST(_request: Request, context: RouteContext) {
 
   if (!session) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
-  }
-
-  if (session.role !== "trainee") {
-    return NextResponse.json({ error: "Only trainee attempts are tracked." }, { status: 400 });
   }
 
   if (!canPersistRolePlayAttempts()) {
@@ -71,6 +67,13 @@ export async function POST(_request: Request, context: RouteContext) {
 
   if (!canUserAccessRolePlay(session, roleplay)) {
     return NextResponse.json({ error: "Roleplay access denied." }, { status: 403 });
+  }
+
+  if (!canUserTakeRolePlay(session, roleplay)) {
+    return NextResponse.json(
+      { error: "Only assigned learner attempts are tracked." },
+      { status: 400 },
+    );
   }
 
   const currentStatus = await getServerRolePlayAttemptStatus(session.id, id);

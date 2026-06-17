@@ -46,7 +46,7 @@ type AssignableTrainee = {
   id: string;
   email: string;
   name: string;
-  role: "trainee";
+  role: "trainee" | "course_admin";
 };
 
 function wait(milliseconds: number) {
@@ -132,14 +132,14 @@ export function RolePlayBuilder({
         });
 
         if (!response.ok) {
-          throw new Error(`Unable to load trainee users. HTTP ${response.status}.`);
+          throw new Error(`Unable to load assignable users. HTTP ${response.status}.`);
         }
 
         const payload = (await response.json()) as { users?: AssignableTrainee[] };
         setTrainees(Array.isArray(payload.users) ? payload.users : []);
       } catch (error) {
         setTraineeLoadError(
-          error instanceof Error ? error.message : "Unable to load trainee users.",
+          error instanceof Error ? error.message : "Unable to load assignable users.",
         );
       }
     })();
@@ -780,8 +780,8 @@ export function RolePlayBuilder({
                     <div>
                       <p className="text-sm font-semibold text-slate-950">User Access</p>
                       <p className="mt-1 text-xs leading-5 text-slate-500">
-                        Choose which trainee accounts can see and start this course after it is
-                        published.
+                        Choose which trainee and course admin accounts can see and start this
+                        course after it is published.
                       </p>
                     </div>
                     <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100">
@@ -797,8 +797,8 @@ export function RolePlayBuilder({
 
                   {!traineeLoadError && trainees.length === 0 && (
                     <div className="rounded-2xl border border-dashed border-blue-200 bg-blue-50/60 p-4 text-sm text-slate-600">
-                      No trainee users available yet. Add trainee accounts to the alpha auth
-                      configuration before assigning this course.
+                      No assignable users available yet. Add trainee or course admin accounts
+                      before assigning this course.
                     </div>
                   )}
 
@@ -814,6 +814,9 @@ export function RolePlayBuilder({
                               {trainee.name}
                             </span>
                             <span className="block text-xs text-slate-500">{trainee.email}</span>
+                            <span className="mt-1 inline-flex rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500 ring-1 ring-blue-100">
+                              {trainee.role === "course_admin" ? "Course Admin + Learner" : "Trainee"}
+                            </span>
                           </span>
                           <input
                             type="checkbox"

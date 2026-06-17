@@ -45,7 +45,7 @@ export function PublishedRoleplayCourses({
           );
           setRoleplays(visibleRoleplays);
 
-          if (nextUser.role === "trainee") {
+          if (nextUser.role === "trainee" || nextUser.role === "course_admin") {
             const attemptEntries = await Promise.all(
               visibleRoleplays.map(async (roleplay) => [
                 roleplay.id,
@@ -82,8 +82,10 @@ export function PublishedRoleplayCourses({
         </h2>
         <p className="mx-auto mt-3 max-w-2xl text-sm leading-7 text-slate-600">
           {user?.role === "trainee"
-            ? "Ask a course admin to assign published roleplay courses to your trainee account."
-            : "Publish a roleplay and assign trainee users from the Role Play Builder."}
+            ? "Ask a course admin to assign published roleplay courses to your learner account."
+            : user?.role === "course_admin"
+              ? "Ask another course admin to assign published roleplay courses to your account."
+              : "Publish a roleplay and assign learner users from the Role Play Builder."}
         </p>
       </section>
     );
@@ -100,7 +102,9 @@ export function PublishedRoleplayCourses({
       <div className="grid gap-6 xl:grid-cols-3">
         {roleplays.map((roleplay) => {
             const attemptStatus =
-              user?.role === "trainee" ? attemptsByRolePlayId[roleplay.id] : null;
+              user?.role === "trainee" || user?.role === "course_admin"
+                ? attemptsByRolePlayId[roleplay.id]
+                : null;
             const actionLabel =
               attemptStatus?.locked
                 ? "Attempts Used"

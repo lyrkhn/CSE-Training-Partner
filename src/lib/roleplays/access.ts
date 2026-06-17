@@ -6,11 +6,22 @@ export function canUserAccessRolePlay(user: AuthSessionUser, roleplay: RolePlayC
     return true;
   }
 
+  return canUserTakeRolePlay(user, roleplay);
+}
+
+export function canUserTakeRolePlay(user: AuthSessionUser, roleplay: RolePlayConfig) {
   const assignedTraineeIds = roleplay.settings.assignedTraineeIds ?? [];
-  return roleplay.status === "published" && assignedTraineeIds.includes(user.id);
+  return (
+    roleplay.status === "published" &&
+    (user.role === "trainee" || user.role === "course_admin") &&
+    assignedTraineeIds.includes(user.id)
+  );
 }
 
 export function visibleRoleplaysForUser(user: AuthSessionUser, roleplays: RolePlayConfig[]) {
-  return roleplays.filter((roleplay) => canUserAccessRolePlay(user, roleplay));
-}
+  if (user.role === "root_admin") {
+    return roleplays.filter((roleplay) => roleplay.status === "published");
+  }
 
+  return roleplays.filter((roleplay) => canUserTakeRolePlay(user, roleplay));
+}
