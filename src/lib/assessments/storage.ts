@@ -4,8 +4,9 @@ import path from "node:path";
 import type { Prisma } from "@prisma/client";
 import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
 import type { SavedFinalAssessment } from "@/src/lib/assessments/types";
+import { dataPath } from "@/src/lib/storage/dataDir";
 
-const assessmentsDir = path.join(process.cwd(), "data", "assessments");
+const assessmentsDir = dataPath("assessments");
 
 function assessmentFilePath(assessmentId: string) {
   return path.join(assessmentsDir, `${assessmentId}.json`);

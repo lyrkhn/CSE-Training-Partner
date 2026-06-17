@@ -4,8 +4,9 @@ import path from "node:path";
 import type { Prisma } from "@prisma/client";
 import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
 import type { RolePlayConfig, RolePlayStatus } from "@/src/lib/roleplays/types";
+import { dataPath } from "@/src/lib/storage/dataDir";
 
-const roleplaysDir = path.join(process.cwd(), "data", "roleplays");
+const roleplaysDir = dataPath("roleplays");
 
 function roleplayFilePath(rolePlayId: string) {
   return path.join(roleplaysDir, `${rolePlayId}.json`);

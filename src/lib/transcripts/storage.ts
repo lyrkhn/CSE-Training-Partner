@@ -3,12 +3,13 @@ import path from "node:path";
 
 import type { Prisma } from "@prisma/client";
 import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
+import { dataPath } from "@/src/lib/storage/dataDir";
 import type {
   SaveTranscriptSessionInput,
   SavedTranscriptSession,
 } from "@/src/lib/transcripts/types";
 
-const transcriptsDir = path.join(process.cwd(), "data", "transcripts");
+const transcriptsDir = dataPath("transcripts");
 
 function transcriptFilePath(transcriptId: string) {
   return path.join(transcriptsDir, `${transcriptId}.json`);

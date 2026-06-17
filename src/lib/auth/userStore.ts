@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 import { alphaUsers, type AlphaUser } from "@/src/lib/auth/alphaUsers";
+import { dataPath } from "@/src/lib/storage/dataDir";
 import type { MockRole } from "@/lib/types";
 
 export type SafeAuthUser = {
@@ -35,7 +36,7 @@ type UserStoreFile = {
 
 type AuthUserRecord = AlphaUser | ManagedUserRecord;
 
-const usersDir = path.join(process.cwd(), "data");
+const usersDir = dataPath();
 const usersFilePath = path.join(usersDir, "users.json");
 
 const emptyStore: UserStoreFile = {
