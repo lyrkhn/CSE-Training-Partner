@@ -1,4 +1,4 @@
-import { BellIcon, PanelLeftIcon, SearchIcon } from "@/components/ui/icons";
+import { AgoraMarkIcon, BellIcon, PanelLeftIcon, SearchIcon } from "@/components/ui/icons";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import type { AuthSessionUser } from "@/src/lib/auth/session";
 
@@ -36,11 +36,16 @@ export function Header({
               }`}
             />
           </button>
-          <div>
-            <p className="text-sm font-medium text-primary">Learning Dashboard</p>
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
-              Support mastery through simulation and assessment
-            </h2>
+          <div className="flex items-start gap-3">
+            <span className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-[#00C2FF]">
+              <AgoraMarkIcon className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-sm font-medium text-primary">Learning Dashboard</p>
+              <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
+                Support mastery through simulation and assessment
+              </h2>
+            </div>
           </div>
         </div>
 
