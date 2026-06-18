@@ -13,9 +13,14 @@ type AiAssessmentPayload = {
   overallScore?: unknown;
   outcome?: unknown;
   summary?: unknown;
+  overallSummary?: unknown;
+  feedback?: unknown;
   strengths?: unknown;
   improvements?: unknown;
   dimensions?: unknown;
+  rubric?: unknown;
+  scores?: unknown;
+  dimensionScores?: unknown;
   objectiveResults?: unknown;
 };
 
@@ -40,12 +45,25 @@ function asString(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function clampScore(value: unknown) {
-  if (typeof value !== "number" || Number.isNaN(value)) {
+  const numericValue =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value.replace("%", "").trim())
+        : Number.NaN;
+
+  if (Number.isNaN(numericValue)) {
     return 0;
   }
 
-  return Math.max(0, Math.min(100, Math.round(value)));
+  return Math.max(0, Math.min(100, Math.round(numericValue)));
 }
 
 function stripCodeFence(value: string) {
@@ -63,6 +81,16 @@ function stripCodeFence(value: string) {
 }
 
 function normalizeStringArray(value: unknown, fallback: string[]) {
+  if (typeof value === "string") {
+    const items = value
+      .split(/\n|;/)
+      .map((item) => item.replace(/^[-*]\s*/, "").trim())
+      .filter(Boolean)
+      .slice(0, 6);
+
+    return items.length > 0 ? items : fallback;
+  }
+
   if (!Array.isArray(value)) {
     return fallback;
   }
@@ -75,32 +103,96 @@ function normalizeStringArray(value: unknown, fallback: string[]) {
   return items.length > 0 ? items : fallback;
 }
 
+function dimensionSummaryFallback(label: string, score: number) {
+  if (label === "Objective Coverage") {
+    return "Assessment generated with partial rubric structure. Review the completed and missed objectives for evidence-based coverage.";
+  }
+
+  if (label === "Customer Handling") {
+    return `Customer handling is estimated from the final assessment score of ${score} because the model did not provide this dimension summary.`;
+  }
+
+  if (label === "Action Clarity") {
+    return `Action clarity is estimated from the final assessment score of ${score} because the model did not provide this dimension summary.`;
+  }
+
+  return `Conversation completeness is estimated from the final assessment score of ${score} because the model did not provide this dimension summary.`;
+}
+
+function normalizeDimensionItem(item: unknown, fallbackLabel?: string): AssessmentDimension | null {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const record = item as Record<string, unknown>;
+  const label = (
+    asString(record.label) ||
+    asString(record.name) ||
+    asString(record.dimension) ||
+    fallbackLabel ||
+    ""
+  ).trim();
+  const rawSummary =
+    asString(record.summary) ||
+    asString(record.feedback) ||
+    asString(record.reasoning) ||
+    asString(record.comment);
+
+  if (!label) {
+    return null;
+  }
+
+  const score = clampScore(record.score ?? record.value ?? record.rating);
+  return {
+    label,
+    score,
+    summary: rawSummary.trim() || dimensionSummaryFallback(label, score),
+  };
+}
+
 function normalizeDimensions(value: unknown): AssessmentDimension[] {
-  if (!Array.isArray(value)) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeDimensionItem(item))
+      .filter((item): item is AssessmentDimension => Boolean(item))
+      .slice(0, 6);
+  }
+
+  const record = asRecord(value);
+  if (!record) {
     return [];
   }
 
-  return value
-    .map((item) => {
-      if (!item || typeof item !== "object") {
-        return null;
+  return Object.entries(record)
+    .map(([label, item]) => {
+      if (typeof item === "number") {
+        return {
+          label,
+          score: clampScore(item),
+          summary: dimensionSummaryFallback(label, clampScore(item)),
+        };
       }
 
-      const label = asString((item as { label?: unknown }).label).trim();
-      const summary = asString((item as { summary?: unknown }).summary).trim();
-
-      if (!label || !summary) {
-        return null;
+      if (typeof item === "string") {
+        return {
+          label,
+          score: 0,
+          summary: item,
+        };
       }
 
-      return {
-        label,
-        score: clampScore((item as { score?: unknown }).score),
-        summary,
-      };
+      return normalizeDimensionItem(item, label);
     })
     .filter((item): item is AssessmentDimension => Boolean(item))
     .slice(0, 6);
+}
+
+function fallbackDimensions(overallScore: number): AssessmentDimension[] {
+  return ASSESSMENT_DIMENSION_LABELS.map((label) => ({
+    label,
+    score: overallScore,
+    summary: dimensionSummaryFallback(label, overallScore),
+  }));
 }
 
 function normalizeObjectiveResults(value: unknown, objectives: Objective[]): Objective[] {
@@ -158,11 +250,23 @@ function normalizeObjectiveResults(value: unknown, objectives: Objective[]): Obj
 
 function parseAiAssessment(content: string, objectives: Objective[]): NormalizedAiAssessment {
   const parsed = JSON.parse(stripCodeFence(content)) as AiAssessmentPayload;
-  const dimensions = normalizeDimensions(parsed.dimensions);
   const objectiveResults = normalizeObjectiveResults(parsed.objectiveResults, objectives);
   const overallScore = clampScore(parsed.overallScore);
   const outcome = parsed.outcome === "passed" ? "passed" : "needs_review";
-  const summary = asString(parsed.summary).trim();
+  const dimensions =
+    normalizeDimensions(parsed.dimensions).length > 0
+      ? normalizeDimensions(parsed.dimensions)
+      : normalizeDimensions(parsed.rubric).length > 0
+        ? normalizeDimensions(parsed.rubric)
+        : normalizeDimensions(parsed.dimensionScores).length > 0
+          ? normalizeDimensions(parsed.dimensionScores)
+          : normalizeDimensions(parsed.scores);
+  const summary = (
+    asString(parsed.summary) ||
+    asString(parsed.overallSummary) ||
+    asString(parsed.feedback) ||
+    `Final assessment completed with an overall score of ${overallScore}%. Review objective coverage and coaching notes for specific next steps.`
+  ).trim();
   const strengths = normalizeStringArray(parsed.strengths, [
     "Completed a roleplay attempt for review.",
   ]);
@@ -170,17 +274,13 @@ function parseAiAssessment(content: string, objectives: Objective[]): Normalized
     "Continue practicing concise summaries and customer confirmation checks.",
   ]);
 
-  if (!summary || dimensions.length === 0) {
-    throw new Error("AI assessment response did not include required summary or dimensions.");
-  }
-
   return {
     overallScore,
     outcome,
     summary,
     strengths,
     improvements,
-    dimensions,
+    dimensions: dimensions.length > 0 ? dimensions : fallbackDimensions(overallScore),
     objectiveResults,
   };
 }

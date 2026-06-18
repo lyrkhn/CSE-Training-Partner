@@ -185,6 +185,7 @@ export default function RolePlayPreviewSessionPage() {
   const [sessionEnded, setSessionEnded] = useState(false);
   const [callStatus, setCallStatus] = useState<CallStatus>("Preparing");
   const [simulationState, setSimulationState] = useState<SimulationState>("preparing");
+  const [preCallPreviewAccepted, setPreCallPreviewAccepted] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
   const [pushToTalkEnabled, setPushToTalkEnabled] = useState(true);
@@ -267,6 +268,8 @@ export default function RolePlayPreviewSessionPage() {
 
   useEffect(() => {
     if (!rolePlayId) return;
+    setPreCallPreviewAccepted(false);
+    startAttemptedRef.current = false;
     void (async () => {
       const nextConfig = (await fetchRolePlayConfig(rolePlayId)) ?? fallbackConfig(rolePlayId);
       setConfig(nextConfig);
@@ -306,12 +309,12 @@ export default function RolePlayPreviewSessionPage() {
   }, [config, sessionUser]);
 
   useEffect(() => {
-    if (sessionEnded) return;
+    if (sessionEnded || callStatus !== "In Call") return;
     const interval = window.setInterval(() => {
       setElapsedSeconds((current) => current + 1);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [sessionEnded]);
+  }, [callStatus, sessionEnded]);
 
   useEffect(() => {
     if (callStatus !== "In Call" || simulationState !== "in_call") {
@@ -763,10 +766,18 @@ export default function RolePlayPreviewSessionPage() {
     if (isAssignedLearner) {
       if (!attemptStatus) return;
       if (attemptStatus.locked) return;
+      if (!preCallPreviewAccepted) return;
     }
     startAttemptedRef.current = true;
     void startVoiceRolePlay(config);
-  }, [accessDenied, attemptStatus, config, isAssignedLearner, sessionUser]);
+  }, [
+    accessDenied,
+    attemptStatus,
+    config,
+    isAssignedLearner,
+    preCallPreviewAccepted,
+    sessionUser,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -855,6 +866,153 @@ export default function RolePlayPreviewSessionPage() {
     );
   }
 
+  if (
+    isAssignedLearner &&
+    !preCallPreviewAccepted &&
+    simulationState === "preparing" &&
+    callStatus === "Preparing"
+  ) {
+    const remainingAttempts = attemptStatus?.remainingAttempts ?? null;
+
+    return (
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] px-6 py-8 text-slate-950">
+        <main className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <section className="overflow-hidden rounded-[2rem] border border-blue-100 bg-hero-grid p-7 shadow-soft">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+              Before You Start
+            </p>
+            <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">
+              {config.settings.meetingTitle}
+            </h1>
+            <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-600">
+              Review the meeting context, customer persona, scenario, and objectives before joining
+              the live roleplay call. The timer and attempt count only start after you begin the
+              actual call.
+            </p>
+
+            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-blue-100 bg-white/80 p-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Duration</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">
+                  {config.settings.durationMinutes} min
+                </p>
+              </div>
+              <div className="rounded-2xl border border-blue-100 bg-white/80 p-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Learner Role</p>
+                <p className="mt-2 text-sm font-semibold leading-6 text-slate-950">
+                  {config.plan.learnerRole}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-blue-100 bg-white/80 p-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Attempts</p>
+                <p className="mt-2 text-sm font-semibold leading-6 text-slate-950">
+                  {attemptStatus
+                    ? `${remainingAttempts} of ${attemptStatus.maxAttempts} remaining`
+                    : "Checking..."}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-3xl border border-blue-100 bg-white p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+                Scenario
+              </p>
+              <p className="mt-3 text-sm leading-7 text-slate-600">{config.plan.scenario}</p>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setPreCallPreviewAccepted(true);
+                  startAttemptedRef.current = true;
+                  void startVoiceRolePlay(config);
+                }}
+                disabled={!attemptStatus || isStarting}
+                className="rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isStarting
+                  ? "Starting..."
+                  : attemptStatus
+                    ? "Start Actual Call"
+                    : "Checking Attempts..."}
+              </button>
+              <Link
+                href="/courses"
+                className="rounded-2xl border border-blue-100 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-soft transition hover:bg-blue-50"
+              >
+                Back to Courses
+              </Link>
+            </div>
+          </section>
+
+          <aside className="space-y-6">
+            <section className="rounded-[2rem] border border-blue-100 bg-white p-6 shadow-soft">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+                Meeting Preview
+              </p>
+              <div className="mt-5 flex items-start gap-4">
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#dbeafe,#60a5fa)] text-2xl font-semibold text-white shadow-lg shadow-blue-500/20">
+                  {config.character.name.slice(0, 1).toUpperCase()}
+                </div>
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-950">
+                    {config.character.name}
+                  </h2>
+                  <p className="text-sm font-medium text-blue-700">{config.character.role}</p>
+                  <p className="mt-3 text-sm leading-7 text-slate-600">
+                    {config.character.personalityBackground}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-5 rounded-2xl bg-blue-50/70 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+                  Opening Line
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-700">
+                  "{config.character.greetingMessage}"
+                </p>
+              </div>
+            </section>
+
+            <section className="rounded-[2rem] border border-blue-100 bg-white p-6 shadow-soft">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+                  Objectives
+                </p>
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100">
+                  {learnerGoals.length} goals
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {learnerGoals.map((goal) => (
+                  <div
+                    key={goal.id}
+                    className="rounded-2xl border border-blue-100 bg-blue-50/50 p-4"
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-primary ring-1 ring-blue-100">
+                        {goal.required ? "R" : "O"}
+                      </span>
+                      <div>
+                        <p className="text-sm font-semibold leading-6 text-slate-950">
+                          {goal.label}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {goal.required ? "Required objective" : "Optional objective"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </aside>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.14),transparent_34%),linear-gradient(180deg,#f8fbff,#f4f7fb)] text-slate-950">
       {simulationState === "finished" && (
@@ -925,8 +1083,8 @@ export default function RolePlayPreviewSessionPage() {
                         setCallStatus("Preparing");
                         setSessionEnded(false);
                         setIsEnding(false);
-                        startAttemptedRef.current = true;
-                        void startVoiceRolePlay(config);
+                        setPreCallPreviewAccepted(false);
+                        startAttemptedRef.current = false;
                       }}
                       className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
                     >
