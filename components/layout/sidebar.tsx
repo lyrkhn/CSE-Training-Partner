@@ -10,7 +10,7 @@ import { canAccessNavItem } from "@/lib/mock-auth";
 import { cn } from "@/lib/utils";
 import type { MockRole } from "@/lib/types";
 import {
-  AgoraMarkIcon,
+  AiRolePlayIcon,
   AssessmentIcon,
   BuilderIcon,
   ControlPanelIcon,
@@ -63,20 +63,20 @@ export function Sidebar({ collapsed = false, role }: { collapsed?: boolean; role
         )}
       >
         {collapsed ? (
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/15 text-[#00C2FF]">
-            <AgoraMarkIcon className="h-6 w-6" />
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0ea5e9,#22d3ee)] text-white shadow-lg shadow-cyan-500/20">
+            <AiRolePlayIcon className="h-6 w-6" />
           </div>
         ) : (
           <div>
             <div className="flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/15 text-[#00C2FF]">
-                <AgoraMarkIcon className="h-5 w-5" />
+              <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#0ea5e9,#22d3ee)] text-white shadow-lg shadow-cyan-500/20">
+                <AiRolePlayIcon className="h-5 w-5" />
               </span>
               <div>
                 <p className="text-xs uppercase tracking-[0.24em] text-slate-400">
-                  Learning Workspace
+                  Training & Assessment
                 </p>
-                <h1 className="mt-1 text-xl font-semibold leading-tight">CSE Training Partner</h1>
+                <h1 className="mt-1 text-xl font-semibold leading-tight">AI RolePlay Academy</h1>
               </div>
             </div>
             <p className="mt-3 text-sm text-slate-400">
