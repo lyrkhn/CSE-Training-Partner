@@ -64,6 +64,23 @@ export function SimulationIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function AiRolePlayIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <rect x="4" y="6" width="16" height="12" rx="4" />
+      <path d="M9 10h.01" />
+      <path d="M15 10h.01" />
+      <path d="M9.5 14h5" />
+      <path d="M12 3v3" />
+      <path d="M7 18v2" />
+      <path d="M17 18v2" />
+      <path d="M20 10h1.5v4H20" />
+      <path d="M4 10H2.5v4H4" />
+      <path d="m18.5 3 .6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z" />
+    </BaseIcon>
+  );
+}
+
 export function AssessmentIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <BaseIcon {...props}>
