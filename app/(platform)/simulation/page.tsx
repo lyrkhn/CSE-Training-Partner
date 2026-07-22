@@ -26,12 +26,12 @@ export default function SimulationPage() {
 
         <Card className="bg-slate-950 text-white">
           <CardHeader>
-            <CardDescription className="text-slate-400">Alpha access model</CardDescription>
+            <CardDescription className="text-slate-400">Access model</CardDescription>
             <CardTitle className="text-white">Course assignments</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 text-sm text-slate-300">
             <div className="rounded-2xl bg-white/10 p-4">
-              Trainees only see courses assigned to their logged-in alpha account.
+              Trainees only see courses assigned to their logged-in account.
             </div>
             <div className="rounded-2xl bg-white/10 p-4">
               Admins can publish courses and update assignment access from the builder.

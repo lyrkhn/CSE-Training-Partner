@@ -45,9 +45,9 @@ export function LoginForm() {
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.18),transparent_34%),linear-gradient(135deg,#f8fbff,#eef5ff_48%,#f8fafc)] px-6 py-10 text-slate-950">
       <div className="mx-auto grid min-h-[calc(100vh-5rem)] max-w-6xl items-center gap-8 lg:grid-cols-[1fr_0.88fr]">
         <section className="rounded-[2rem] border border-white/80 bg-white/70 p-8 shadow-soft backdrop-blur-xl">
-          <p className="text-xs uppercase tracking-[0.28em] text-primary">Alpha Access</p>
+          <p className="text-xs uppercase tracking-[0.28em] text-primary">Workspace Access</p>
           <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-950 md:text-5xl">
-            CSE AI Roleplay Partner
+            AI RolePlay Academy
           </h1>
           <p className="mt-5 max-w-2xl text-base leading-8 text-slate-600">
             Sign in to test course builder, roleplay sessions, transcript review, AI assessment,
@@ -57,7 +57,7 @@ export function LoginForm() {
             {["Course Admin", "Trainee", "Root Admin"].map((item) => (
               <div key={item} className="rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
                 <p className="text-sm font-semibold text-slate-950">{item}</p>
-                <p className="mt-2 text-xs leading-5 text-slate-500">Alpha session enabled</p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">Role-based access</p>
               </div>
             ))}
           </div>
@@ -67,7 +67,7 @@ export function LoginForm() {
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-primary">Login</p>
             <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-              Start alpha test session
+              Sign in to your workspace
             </h2>
             <p className="mt-2 text-sm leading-6 text-slate-500">
               Enter your assigned email and password to access the training workspace.

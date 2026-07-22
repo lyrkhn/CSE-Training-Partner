@@ -176,7 +176,7 @@ export function FinalAssessmentsList() {
             </h2>
             <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-600">
               Trainees see assessments only for roleplay courses assigned to them. Admins can view
-              all generated alpha reviews.
+              all generated roleplay reviews.
             </p>
           </div>
           <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">

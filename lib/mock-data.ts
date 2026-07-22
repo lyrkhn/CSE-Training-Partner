@@ -9,8 +9,7 @@ import type {
 
 export const navigationItems: NavItem[] = [
   { title: "Dashboard", href: "/", icon: "dashboard" },
-  { title: "Simulation Courses", href: "/courses", icon: "courses" },
-  { title: "Simulation Session", href: "/simulation", icon: "simulation", allowedRoles: ["trainee"] },
+  { title: "Simulation Courses", href: "/courses", icon: "simulation" },
   {
     title: "Course Builder",
     href: "/course-builder",
