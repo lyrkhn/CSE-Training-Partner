@@ -23,6 +23,7 @@ import {
   fetchRolePlayAttemptStatus,
   type RolePlayAttemptStatus,
 } from "@/src/lib/roleplays/attempts";
+import { defaultRolePlayCharacterPreset } from "@/src/lib/roleplays/characterPresets";
 import { fetchRolePlayConfig } from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
@@ -144,8 +145,10 @@ function fallbackConfig(rolePlayId: string): RolePlayConfig {
       learnerRole: "Customer Support Engineer",
     },
     character: {
-      name: "Morgan Lee",
+      presetId: defaultRolePlayCharacterPreset.id,
+      name: defaultRolePlayCharacterPreset.name,
       role: "Enterprise customer",
+      voiceId: defaultRolePlayCharacterPreset.voiceId,
       personalityBackground: "Direct and skeptical, but cooperative when the learner is specific.",
       greetingMessage: "Can we please get this issue moving today?",
     },
@@ -163,8 +166,7 @@ function fallbackConfig(rolePlayId: string): RolePlayConfig {
       evaluatorPrompt: "Evaluate learner responses against role play goals.",
     },
     generated: {
-      system_message:
-        "You are Morgan Lee, an enterprise customer escalation contact. You are the customer/persona in the role play, not the engineer. Stay in character, speak in first person, and do not act as coach, evaluator, assistant, or support engineer. Keep the conversation focused on the configured Agora customer issue and do not invent unrelated product behavior.",
+      system_message: `You are ${defaultRolePlayCharacterPreset.name}, an enterprise customer escalation contact. You are the customer/persona in the role play, not the engineer. Stay in character, speak in first person, and do not act as coach, evaluator, assistant, or support engineer. Keep the conversation focused on the configured Agora customer issue and do not invent unrelated product behavior.`,
       greeting_message: "Can we please get this issue moving today?",
       greeting_message_switch: "single_first",
       delay_ms: 1200,
@@ -487,6 +489,7 @@ export default function RolePlayPreviewSessionPage() {
           greeting_message: activeConfig.generated.greeting_message,
           greeting_message_switch: activeConfig.generated.greeting_message_switch,
           delay_ms: activeConfig.generated.delay_ms,
+          voice_id: activeConfig.character.voiceId,
         }),
       });
 
@@ -785,19 +788,13 @@ export default function RolePlayPreviewSessionPage() {
     };
   }, []);
 
-  const fallbackCaptions = useMemo(() => {
-    if (!config) return [];
-    return [
-      {
-        speaker: config.character.name,
-        text: config.generated.greeting_message,
-      },
-      {
-        speaker: "System",
-        text: "Live captions will appear here once the conversation starts.",
-      },
-    ];
-  }, [config]);
+  const latestAiCaption = useMemo(() => {
+    const aiCaptions = normalizedTranscript.filter(
+      (caption) => caption.speaker_type === "customer_ai",
+    );
+
+    return aiCaptions.length > 0 ? aiCaptions[aiCaptions.length - 1] : null;
+  }, [normalizedTranscript]);
 
   if (!config || (!sessionUser && !accessDenied)) {
     return (
@@ -844,8 +841,9 @@ export default function RolePlayPreviewSessionPage() {
             This roleplay is locked
           </h1>
           <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-slate-600">
-            You completed this simulation twice. The retake window is now closed, and your latest
-            final assessment is available from Assessment Results.
+            {attemptStatus.deadlineLocked
+              ? "The course deadline has passed. Ask your course admin to grant another attempt if you need to complete it."
+              : "You completed all allowed attempts for this simulation. Your latest final assessment is available from Assessment Results."}
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <Link
@@ -1217,12 +1215,12 @@ export default function RolePlayPreviewSessionPage() {
       </header>
 
       <main
-        className={`mx-auto grid min-h-[calc(100vh-73px)] max-w-7xl grid-cols-1 gap-6 p-6 ${
+        className={`mx-auto grid min-h-[calc(100vh-73px)] max-w-7xl grid-cols-1 items-start gap-6 p-6 lg:h-[calc(100vh-73px)] lg:overflow-hidden ${
           guideOpen ? "lg:grid-cols-[minmax(0,1fr)_380px]" : "lg:grid-cols-1"
         }`}
       >
-        <section className="flex min-h-[calc(100vh-121px)] flex-col gap-5">
-          <div className="grid flex-1 place-items-center overflow-hidden rounded-[2rem] border border-blue-100 bg-white shadow-soft">
+        <section className="flex min-h-[calc(100vh-121px)] flex-col gap-5 pr-1 lg:h-[calc(100vh-121px)] lg:min-h-0 lg:overflow-y-auto">
+          <div className="grid min-h-[560px] flex-1 place-items-center overflow-hidden rounded-[2rem] border border-blue-100 bg-white shadow-soft">
             <div className="grid place-items-center p-8 text-center">
               <div className="relative mx-auto h-44 w-44">
                 <div
@@ -1281,6 +1279,28 @@ export default function RolePlayPreviewSessionPage() {
                     : "open"}
                 </span>
               </div>
+              {captionsOpen && (
+                <div className="mx-auto mt-6 min-h-[104px] w-full max-w-2xl rounded-[1.75rem] border border-slate-200 bg-slate-950 px-5 py-4 text-left shadow-[0_24px_60px_-36px_rgba(15,23,42,0.7)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">
+                      {config.character.name}
+                    </p>
+                    <span className="rounded-full border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
+                      {latestAiCaption
+                        ? latestAiCaption.is_final
+                          ? "AI caption"
+                          : "Streaming"
+                        : "Waiting"}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-lg font-medium leading-8 text-white">
+                    {latestAiCaption?.text ??
+                      (callStatus === "In Call"
+                        ? "Waiting for the AI customer to speak..."
+                        : "AI customer captions will appear here once the call starts.")}
+                  </p>
+                </div>
+              )}
               {pushToTalkEnabled && (
                 <div className="mx-auto mt-6 max-w-md rounded-3xl border border-blue-100 bg-blue-50/70 p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">
@@ -1366,38 +1386,10 @@ export default function RolePlayPreviewSessionPage() {
             </div>
           </div>
 
-          {captionsOpen && (
-            <div className="mt-4 rounded-3xl border border-blue-100 bg-white p-4 shadow-soft">
-              <div className="flex items-center justify-between">
-                <p className="text-xs uppercase tracking-[0.2em] text-primary">Closed Captions</p>
-                <span className="text-xs font-medium text-slate-500">
-                  {normalizedTranscript.length > 0 ? "Live transcript" : "Waiting for transcript"}
-                </span>
-              </div>
-              <div className="mt-3 space-y-2">
-                {normalizedTranscript.length > 0
-                  ? normalizedTranscript.map((caption) => (
-                      <p key={caption.id} className="rounded-2xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                        <span className="font-semibold text-slate-950">
-                          {caption.speaker_type === "customer_ai" ? config.character.name : "Engineer"}:
-                        </span>{" "}
-                        {caption.text}
-                      </p>
-                    ))
-                  : fallbackCaptions.map((caption, index) => (
-                      <p key={`${caption.speaker}-${index}`} className="rounded-2xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                        <span className="font-semibold text-slate-950">{caption.speaker}:</span>{" "}
-                        {caption.text}
-                      </p>
-                    ))}
-              </div>
-            </div>
-          )}
-
         </section>
 
         {guideOpen && (
-          <aside className="w-full rounded-3xl border border-blue-100 bg-white p-5 shadow-soft lg:w-96">
+          <aside className="max-h-[calc(100vh-121px)] w-full overflow-y-auto rounded-3xl border border-blue-100 bg-white p-5 shadow-soft lg:w-96">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold text-slate-950">Role play guide</h2>
               <button

@@ -2,11 +2,11 @@ import type { AuthSessionUser } from "@/src/lib/auth/session";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
 export function canUserAccessRolePlay(user: AuthSessionUser, roleplay: RolePlayConfig) {
-  if (user.role === "root_admin" || user.role === "course_admin") {
+  if (user.role === "root_admin") {
     return true;
   }
 
-  return canUserTakeRolePlay(user, roleplay);
+  return canUserManageRolePlay(user, roleplay) || canUserTakeRolePlay(user, roleplay);
 }
 
 export function canUserTakeRolePlay(user: AuthSessionUser, roleplay: RolePlayConfig) {

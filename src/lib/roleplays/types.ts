@@ -24,8 +24,10 @@ export type RolePlayConfig = {
     learnerRole: string;
   };
   character: {
+    presetId?: string;
     name: string;
     role: string;
+    voiceId?: string;
     personalityBackground: string;
     greetingMessage: string;
   };
@@ -33,6 +35,25 @@ export type RolePlayConfig = {
     meetingTitle: string;
     durationMinutes: number;
     learnerGoals: Objective[];
+    aiCustomerKeyPoints?: string[];
+    originalCallSummary?: string;
+    aiCustomerBehavior?: string;
+    deadlineAt?: string;
+    deadlineTimezone?: string;
+    attemptOverrides?: Record<
+      string,
+      {
+        maxAttempts: number;
+        note?: string;
+        updatedAt?: string;
+        updatedBy?: {
+          id: string;
+          name: string;
+          email: string;
+          role: string;
+        };
+      }
+    >;
     evaluatorPrompt: string;
     assignedTraineeIds?: string[];
   };

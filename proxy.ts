@@ -13,7 +13,7 @@ function isPublicApiPath(pathname: string) {
   return publicApiPrefixes.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const hasSessionCookie = Boolean(request.cookies.get(sessionCookieName)?.value);
 

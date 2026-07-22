@@ -12,6 +12,22 @@ import {
 import { fetchRolePlayConfigs } from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
+function formatDeadline(value?: string, timezone = "UTC") {
+  if (!value) return "No deadline";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Invalid deadline";
+
+  return `${new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).format(date)}${timezone === "UTC" ? "" : ` (${timezone})`}`;
+}
+
 export function PublishedRoleplayCourses({
   emptyState = false,
 }: {
@@ -111,6 +127,8 @@ export function PublishedRoleplayCourses({
                 : attemptStatus && attemptStatus.completedAttempts > 0
                   ? "Retake Role Play"
                   : "Start Role Play";
+            const deadlinePassed = attemptStatus?.deadlinePassed;
+            const deadlineLocked = attemptStatus?.deadlineLocked;
 
             return (
               <article
@@ -133,12 +151,27 @@ export function PublishedRoleplayCourses({
                         : "bg-emerald-50 text-emerald-700 ring-emerald-200"
                     }`}
                   >
-                    {attemptStatus?.locked ? "Locked" : "Published"}
+                    {deadlineLocked ? "Deadline Passed" : attemptStatus?.locked ? "Locked" : "Published"}
                   </span>
                 </div>
                 <p className="mt-4 line-clamp-3 text-sm leading-6 text-slate-600">
                   {roleplay.plan.scenario}
                 </p>
+                <div
+                  className={`mt-4 rounded-2xl px-3 py-2 text-xs font-semibold ${
+                    deadlineLocked
+                      ? "bg-rose-50 text-rose-700 ring-1 ring-rose-100"
+                      : deadlinePassed
+                        ? "bg-amber-50 text-amber-700 ring-1 ring-amber-100"
+                        : "bg-slate-50 text-slate-600 ring-1 ring-slate-100"
+                  }`}
+                >
+                  Deadline:{" "}
+                  {formatDeadline(
+                    attemptStatus?.deadlineAt ?? roleplay.settings.deadlineAt,
+                    attemptStatus?.deadlineTimezone ?? roleplay.settings.deadlineTimezone,
+                  )}
+                </div>
                 <div className="mt-5 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                   <span>{roleplay.settings.durationMinutes} min</span>
                   <span>{roleplay.settings.learnerGoals.length} goals</span>
@@ -146,7 +179,9 @@ export function PublishedRoleplayCourses({
                 {attemptStatus && (
                   <p className="mt-3 rounded-2xl bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
                     {attemptStatus.locked
-                      ? "Both attempts completed"
+                      ? attemptStatus.deadlineLocked
+                        ? "Deadline passed. Ask your course admin for another attempt."
+                        : "All attempts completed"
                       : `${attemptStatus.remainingAttempts} of ${attemptStatus.maxAttempts} attempts remaining`}
                   </p>
                 )}

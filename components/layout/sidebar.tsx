@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { NavItem } from "@/lib/types";
@@ -45,18 +46,19 @@ function iconFor(item: NavItem["icon"], className = "h-5 w-5") {
 
 export function Sidebar({ collapsed = false, role }: { collapsed?: boolean; role: MockRole }) {
   const pathname = usePathname();
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
   const visibleNavigationItems = navigationItems.filter((item) => canAccessNavItem(role, item));
 
   return (
     <aside
       className={cn(
-        "sticky top-0 hidden h-screen shrink-0 flex-col border-r border-white/60 bg-slate-950 py-8 text-slate-100 transition-[width,padding] duration-300 lg:flex",
+        "sticky top-0 hidden h-screen shrink-0 flex-col overflow-hidden border-r border-white/60 bg-slate-950 py-8 text-slate-100 transition-[width,padding] duration-300 lg:flex",
         collapsed ? "w-24 px-4" : "w-72 px-6",
       )}
     >
       <div
         className={cn(
-          "rounded-2xl bg-white/5",
+          "shrink-0 rounded-2xl bg-white/5",
           collapsed ? "flex justify-center p-4" : "p-5",
         )}
       >
@@ -84,7 +86,12 @@ export function Sidebar({ collapsed = false, role }: { collapsed?: boolean; role
         )}
       </div>
 
-      <nav className={cn("mt-8 space-y-2", collapsed && "px-1")}>
+      <nav
+        className={cn(
+          "mt-8 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1 [scrollbar-width:thin]",
+          collapsed && "px-1",
+        )}
+      >
         {visibleNavigationItems.map((item) => {
           const visibleChildren = item.children?.filter((child) => canAccessNavItem(role, child)) ?? [];
           const hasActiveChild = visibleChildren.some((child) =>
@@ -92,25 +99,58 @@ export function Sidebar({ collapsed = false, role }: { collapsed?: boolean; role
           );
           const isActive =
             item.href === "/" ? pathname === item.href : pathname.startsWith(item.href) || hasActiveChild;
+          const hasChildren = !collapsed && visibleChildren.length > 0;
+          const isExpanded = hasChildren && (expandedSections[item.href] ?? isActive);
 
           return (
             <div key={item.href}>
-              <Link
-                href={item.href}
-                className={cn(
-                  "flex rounded-2xl py-3 text-sm font-medium text-slate-300 transition-all",
-                  collapsed ? "justify-center px-3" : "items-center gap-3 px-4",
-                  isActive
-                    ? "bg-primary text-white shadow-lg shadow-blue-500/20"
-                    : "hover:bg-white/10 hover:text-white",
-                )}
-                title={collapsed ? item.title : undefined}
-                aria-label={item.title}
-              >
-                {iconFor(item.icon, "h-5 w-5 shrink-0")}
-                {!collapsed && <span>{item.title}</span>}
-              </Link>
-              {!collapsed && visibleChildren.length > 0 && (
+              {hasChildren ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedSections((current) => ({
+                      ...current,
+                      [item.href]: !(current[item.href] ?? isActive),
+                    }))
+                  }
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-medium text-slate-300 transition-all",
+                    isActive
+                      ? "bg-primary text-white shadow-lg shadow-blue-500/20"
+                      : "hover:bg-white/10 hover:text-white",
+                  )}
+                  aria-expanded={isExpanded}
+                  aria-label={`${isExpanded ? "Collapse" : "Expand"} ${item.title}`}
+                >
+                  {iconFor(item.icon, "h-5 w-5 shrink-0")}
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                  <span
+                    className={cn(
+                      "transition-transform duration-200",
+                      isExpanded ? "rotate-90" : "rotate-0",
+                    )}
+                  >
+                    &gt;
+                  </span>
+                </button>
+              ) : (
+                <Link
+                  href={item.href}
+                  className={cn(
+                    "flex rounded-2xl py-3 text-sm font-medium text-slate-300 transition-all",
+                    collapsed ? "justify-center px-3" : "items-center gap-3 px-4",
+                    isActive
+                      ? "bg-primary text-white shadow-lg shadow-blue-500/20"
+                      : "hover:bg-white/10 hover:text-white",
+                  )}
+                  title={collapsed ? item.title : undefined}
+                  aria-label={item.title}
+                >
+                  {iconFor(item.icon, "h-5 w-5 shrink-0")}
+                  {!collapsed && <span>{item.title}</span>}
+                </Link>
+              )}
+              {hasChildren && isExpanded && (
                 <div className="ml-8 mt-2 space-y-1 border-l border-white/10 pl-3">
                   {visibleChildren.map((child) => {
                     const isChildActive =

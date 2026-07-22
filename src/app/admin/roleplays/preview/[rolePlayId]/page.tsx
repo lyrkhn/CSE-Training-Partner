@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { defaultRolePlayCharacterPreset } from "@/src/lib/roleplays/characterPresets";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
 const storagePrefix = "cse-roleplay-config";
@@ -18,8 +19,10 @@ function fallbackConfig(rolePlayId: string): RolePlayConfig {
       learnerRole: "Customer Support Engineer",
     },
     character: {
-      name: "Morgan Lee",
+      presetId: defaultRolePlayCharacterPreset.id,
+      name: defaultRolePlayCharacterPreset.name,
       role: "Enterprise customer escalation contact",
+      voiceId: defaultRolePlayCharacterPreset.voiceId,
       personalityBackground:
         "Direct, skeptical, and time-sensitive. Cooperates when the engineer shows ownership and asks focused questions.",
       greetingMessage: "I need someone to finally take ownership of this issue.",

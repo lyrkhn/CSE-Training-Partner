@@ -18,7 +18,7 @@ export const navigationItems: NavItem[] = [
     allowedRoles: ["root_admin", "course_admin"],
     children: [
       {
-        title: "Preview Created Courses",
+        title: "Managed Courses",
         href: "/course-builder",
         allowedRoles: ["root_admin", "course_admin"],
       },
@@ -44,6 +44,11 @@ export const navigationItems: NavItem[] = [
       {
         title: "Course List",
         href: "/control-panel/courses",
+        allowedRoles: ["root_admin"],
+      },
+      {
+        title: "Activity Log",
+        href: "/control-panel/activity",
         allowedRoles: ["root_admin"],
       },
     ],

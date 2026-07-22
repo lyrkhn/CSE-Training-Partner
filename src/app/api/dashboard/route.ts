@@ -4,7 +4,11 @@ import { listFinalAssessments } from "@/src/lib/assessments/storage";
 import { getAuthSession } from "@/src/lib/auth/session";
 import { listAuthUsers } from "@/src/lib/auth/userStore";
 import { isDatabaseConfigured, prisma } from "@/src/lib/db/prisma";
-import { getFinalAssessmentLlmConfig, getObjectiveEvaluatorLlmConfig } from "@/src/lib/llm/jsonCompletion";
+import {
+  getCoachFeedbackLlmConfig,
+  getFinalAssessmentLlmConfig,
+  getObjectiveEvaluatorLlmConfig,
+} from "@/src/lib/llm/jsonCompletion";
 import { canUserTakeRolePlay } from "@/src/lib/roleplays/access";
 import { maxTraineeRolePlayAttempts } from "@/src/lib/roleplays/attempts";
 import { listRolePlayConfigs } from "@/src/lib/roleplays/serverStorage";
@@ -61,12 +65,15 @@ async function databaseHealth() {
 }
 
 function convoAiHealth() {
+  const llmConfig = getCoachFeedbackLlmConfig();
   const ready = isConfigured([
     process.env.NEXT_PUBLIC_AGORA_APP_ID,
     process.env.AGORA_APP_CERTIFICATE,
     process.env.AGORA_CUSTOMER_ID,
     process.env.AGORA_CUSTOMER_SECRET,
-    process.env.CONVOAI_TTS_VOICE,
+    llmConfig.apiKey,
+    llmConfig.model,
+    llmConfig.baseUrl,
   ]);
 
   return {
@@ -74,8 +81,8 @@ function convoAiHealth() {
     label: "ConvoAI Config",
     status: ready ? "operational" : "attention",
     detail: ready
-      ? "Agora app, customer credentials, and TTS voice are configured."
-      : "Missing Agora app, customer credentials, or TTS voice.",
+      ? `Agora app, customer credentials, and coach-feedback LLM BYOK are configured (${llmConfig.provider.toUpperCase()} / ${llmConfig.model}).`
+      : "Missing Agora app, customer credentials, or coach-feedback LLM credentials.",
     meta: process.env.CONVOAI_BASE_URL?.trim() || "default endpoint",
   };
 }

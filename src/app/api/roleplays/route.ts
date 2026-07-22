@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { appendActivityLogEntry } from "@/src/lib/activity-log/serverStorage";
 import { getAuthSession } from "@/src/lib/auth/session";
 import { listAuthUsers } from "@/src/lib/auth/userStore";
 import { canUserAccessRolePlay, canUserManageRolePlay } from "@/src/lib/roleplays/access";
@@ -23,9 +24,10 @@ export async function GET() {
 
   const roleplays = await listRolePlayConfigs();
   return NextResponse.json({
-    roleplays: isAdmin(session.role)
-      ? roleplays
-      : roleplays.filter((roleplay) => canUserAccessRolePlay(session, roleplay)),
+    roleplays:
+      session.role === "root_admin"
+        ? roleplays
+        : roleplays.filter((roleplay) => canUserAccessRolePlay(session, roleplay)),
   });
 }
 
@@ -75,5 +77,24 @@ export async function POST(request: Request) {
     createdBy: existing?.createdBy ?? actor,
     updatedBy: actor,
   });
+
+  await appendActivityLogEntry({
+    action: existing ? "course_updated" : "course_created",
+    actor,
+    target: {
+      id: saved.id,
+      type: "roleplay_course",
+      title: saved.settings.meetingTitle,
+    },
+    summary: existing
+      ? `${actor.name} edited "${saved.settings.meetingTitle}".`
+      : `${actor.name} created "${saved.settings.meetingTitle}".`,
+    metadata: {
+      status: saved.status,
+      assignedUsers: saved.settings.assignedTraineeIds?.length ?? 0,
+      ownerId: saved.createdBy?.id ?? null,
+    },
+  });
+
   return NextResponse.json({ roleplay: saved });
 }

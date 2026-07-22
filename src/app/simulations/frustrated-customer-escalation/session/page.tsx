@@ -41,11 +41,13 @@ type StartResponse = {
     greeting_message_switch: string;
     delay_ms: number;
     llmProvider: string | null;
-    llmPreset?: string;
+    llmModel?: string;
     asrProvider: string | null;
+    asrModel?: string;
     asrLanguage?: string;
     ttsProvider: string | null;
     ttsModel?: string;
+    ttsVoiceId?: string;
     appIdConfigured: boolean;
     rtcTokenGenerated: boolean;
     tokenVersion: string;
@@ -1631,11 +1633,13 @@ export default function FrustratedCustomerEscalationSessionPage() {
                 <p>greeting_message_switch: {fixedGreetingSwitch}</p>
                 <p>delay_ms: {fixedDelayMs}</p>
                 <p>ASR provider: {startResponse?.configSummary.asrProvider ?? "not mapped yet"}</p>
+                <p>ASR model: {startResponse?.configSummary.asrModel ?? "not started yet"}</p>
                 <p>ASR language: {startResponse?.configSummary.asrLanguage ?? "en-US"}</p>
                 <p>LLM provider: {startResponse?.configSummary.llmProvider ?? "not mapped yet"}</p>
-                <p>LLM preset: {startResponse?.configSummary.llmPreset ?? "not started yet"}</p>
+                <p>LLM model: {startResponse?.configSummary.llmModel ?? "not started yet"}</p>
                 <p>TTS provider: {startResponse?.configSummary.ttsProvider ?? "not mapped yet"}</p>
                 <p>TTS model: {startResponse?.configSummary.ttsModel ?? "not started yet"}</p>
+                <p>TTS voice: {startResponse?.configSummary.ttsVoiceId ?? "not started yet"}</p>
                 <p>
                   RTC token: {startResponse?.configSummary.rtcTokenGenerated ? "generated" : "not generated"}
                 </p>

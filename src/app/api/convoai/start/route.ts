@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getCoachFeedbackLlmConfig } from "@/src/lib/llm/jsonCompletion";
+import { defaultRolePlayCharacterPreset } from "@/src/lib/roleplays/characterPresets";
 
 const { RtcTokenBuilder } = require("agora-token/src/RtcTokenBuilder2");
 
@@ -7,6 +9,7 @@ type StartRequestBody = {
   greeting_message?: unknown;
   greeting_message_switch?: unknown;
   delay_ms?: unknown;
+  voice_id?: unknown;
 };
 
 type ConvoAiJoinResult = {
@@ -18,7 +21,6 @@ type ConvoAiJoinResult = {
 
 type ConvoAiJoinPayload = {
   name: string;
-  preset?: string;
   properties: {
     channel: string;
     token: string;
@@ -27,6 +29,15 @@ type ConvoAiJoinPayload = {
     enable_string_uid: boolean;
     idle_timeout: number;
     llm: {
+      credential_mode: "byok";
+      vendor: "openai";
+      style: "openai";
+      url: string;
+      api_key: string;
+      params: {
+        model: string;
+        reasoning_effort?: string;
+      };
       system_messages: Array<{
         role: "system";
         content: string;
@@ -40,13 +51,26 @@ type ConvoAiJoinPayload = {
       };
     };
     asr: {
+      credential_mode: "managed";
       vendor: string;
-      language: string;
+      params: {
+        url: string;
+        model: string;
+        language: string;
+      };
     };
     tts: {
+      credential_mode: "managed";
+      vendor: "minimax";
       params: {
+        url: string;
+        model: string;
         voice_setting: {
           voice_id: string;
+          speed: number;
+        };
+        audio_setting: {
+          sample_rate: number;
         };
       };
     };
@@ -60,6 +84,20 @@ function asString(value: unknown) {
 function withDefault(value: unknown, fallback: string) {
   const normalized = asString(value).trim();
   return normalized || fallback;
+}
+
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/+$/, "");
+}
+
+function resolveConvoAiLlmUrl(baseUrl: string) {
+  const normalized = trimTrailingSlash(baseUrl);
+
+  if (normalized.endsWith("/chat/completions") || normalized.endsWith("/responses")) {
+    return normalized;
+  }
+
+  return `${normalized}/chat/completions`;
 }
 
 function buildRtcAccessToken2(params: {
@@ -91,6 +129,7 @@ export async function POST(request: Request) {
   const greetingMessage = asString(body.greeting_message).trim();
   const greetingMessageSwitch = asString(body.greeting_message_switch).trim();
   const delayMs = typeof body.delay_ms === "number" ? body.delay_ms : Number.NaN;
+  const requestedVoiceId = asString(body.voice_id).trim();
 
   if (!systemMessage) {
     return NextResponse.json(
@@ -117,9 +156,29 @@ export async function POST(request: Request) {
   const appCertificate = process.env.AGORA_APP_CERTIFICATE ?? "";
   const customerId = process.env.AGORA_CUSTOMER_ID ?? "";
   const customerSecret = process.env.AGORA_CUSTOMER_SECRET ?? "";
-  const llmPreset = "openai_gpt_4o_mini";
-  const ttsPreset = "minimax_speech_2_8_turbo";
-  const ttsVoiceId = asString(process.env.CONVOAI_TTS_VOICE).trim();
+  const asrVendor = "deepgram";
+  const asrModel = "nova-3";
+  const coachLlmConfig = getCoachFeedbackLlmConfig();
+  const llmVendor = "openai";
+  const llmModel = coachLlmConfig.model;
+  const llmUrl = resolveConvoAiLlmUrl(coachLlmConfig.baseUrl);
+  const llmApiKey = coachLlmConfig.apiKey;
+  const llmParams = {
+    model: llmModel,
+    ...(coachLlmConfig.reasoningEffort
+      ? { reasoning_effort: coachLlmConfig.reasoningEffort }
+      : {}),
+  };
+  const ttsVendor = "minimax";
+  const ttsModel = withDefault(process.env.CONVOAI_MINIMAX_TTS_MODEL, "speech-2.8-turbo");
+  const ttsUrl = withDefault(
+    process.env.CONVOAI_TTS_URL,
+    "wss://api.minimax.io/ws/v1/t2a_v2",
+  );
+  const ttsVoiceId =
+    requestedVoiceId ||
+    asString(process.env.CONVOAI_TTS_VOICE).trim() ||
+    defaultRolePlayCharacterPreset.voiceId;
 
   const baseUrl = withDefault(
     process.env.CONVOAI_BASE_URL,
@@ -150,11 +209,11 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!ttsVoiceId) {
+  if (!llmApiKey || !llmModel || !llmUrl) {
     return NextResponse.json(
       {
         error:
-          "CONVOAI_TTS_VOICE is required for MiniMax preset (properties.tts.params.voice_setting.voice_id).",
+          "Coach feedback LLM credentials are required for ConvoAI LLM BYOK. Configure OSS_API_KEY or FINAL_ASSESSMENT_API_KEY plus the coach feedback model/base URL.",
       },
       { status: 500 },
     );
@@ -176,7 +235,6 @@ export async function POST(request: Request) {
 
   const joinPayload: ConvoAiJoinPayload = {
     name: `frustrated-customer-escalation-${Date.now()}`,
-    preset: `${llmPreset},${ttsPreset}`,
     properties: {
       channel: channelName,
       token: agentRtcToken,
@@ -185,6 +243,12 @@ export async function POST(request: Request) {
       enable_string_uid: false,
       idle_timeout: 120,
       llm: {
+        credential_mode: "byok",
+        vendor: llmVendor,
+        style: "openai",
+        url: llmUrl,
+        api_key: llmApiKey,
+        params: llmParams,
         system_messages: [
           {
             role: "system",
@@ -193,20 +257,33 @@ export async function POST(request: Request) {
         ],
         max_history: 32,
         greeting_message: greetingMessage,
-        failure_message: "Please hold on a second.",
+        failure_message: "I'm sorry. I'm having an issue. Please wait a moment.",
         greeting_configs: {
           mode: greetingMessageSwitch,
           delay_ms: delayMs,
         },
       },
       asr: {
-        vendor: "ares",
-        language: "en-US",
+        credential_mode: "managed",
+        vendor: asrVendor,
+        params: {
+          url: "wss://api.deepgram.com/v1/listen",
+          model: asrModel,
+          language: "en-US",
+        },
       },
       tts: {
+        credential_mode: "managed",
+        vendor: ttsVendor,
         params: {
+          url: ttsUrl,
+          model: ttsModel,
           voice_setting: {
             voice_id: ttsVoiceId,
+            speed: 1.0,
+          },
+          audio_setting: {
+            sample_rate: 44100,
           },
         },
       },
@@ -275,13 +352,17 @@ export async function POST(request: Request) {
     configSummary: {
       greeting_message_switch: greetingMessageSwitch,
       delay_ms: delayMs,
-      llmProvider: "preset",
-      llmPreset,
-      llmModel: llmPreset,
-      asrProvider: "ares",
+      llmProvider: `${llmVendor}:byok`,
+      llmCredentialMode: "byok",
+      llmSource: `coach-feedback:${coachLlmConfig.provider}`,
+      llmModel,
+      llmUrl,
+      asrProvider: `${asrVendor}:managed`,
+      asrModel,
       asrLanguage: "en-US",
-      ttsProvider: "preset",
-      ttsModel: ttsPreset,
+      ttsProvider: `${ttsVendor}:managed`,
+      ttsModel,
+      ttsVoiceId,
       appIdConfigured: Boolean(appId),
       rtcTokenGenerated: Boolean(agentRtcToken),
       tokenVersion: "AccessToken2",

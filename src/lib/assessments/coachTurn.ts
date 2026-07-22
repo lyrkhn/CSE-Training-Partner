@@ -1,7 +1,7 @@
 import type { CoachTurnFeedback, SavedFinalAssessment, TranscriptTurn } from "@/src/lib/assessments/types";
 import {
   generateJsonCompletion,
-  getFinalAssessmentLlmConfig,
+  getCoachFeedbackLlmConfig,
 } from "@/src/lib/llm/jsonCompletion";
 
 type CoachTurnPayload = {
@@ -72,7 +72,7 @@ export async function generateCoachTurnFeedback({
   previousCustomerTurn,
   nextCustomerTurn,
 }: GenerateCoachTurnFeedbackInput): Promise<CoachTurnFeedback> {
-  const llmConfig = getFinalAssessmentLlmConfig();
+  const llmConfig = getCoachFeedbackLlmConfig();
 
   const prompt = [
     "You are a concise but helpful roleplay coach for a customer-facing training simulation.",

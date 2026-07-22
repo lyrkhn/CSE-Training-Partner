@@ -8,6 +8,10 @@ export type RolePlayAttemptStatus = {
   maxAttempts: number;
   locked: boolean;
   lastCompletedAt?: string;
+  deadlineAt?: string;
+  deadlineTimezone?: string;
+  deadlinePassed?: boolean;
+  deadlineLocked?: boolean;
 };
 
 type StoredRolePlayAttempt = {

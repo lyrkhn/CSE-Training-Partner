@@ -9,6 +9,12 @@ import type { Objective } from "@/src/lib/objectives/types";
 import { canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import { buildConvoAIConfig } from "@/src/lib/roleplays/buildConvoAIConfig";
 import {
+  defaultRolePlayCharacterPreset,
+  getRolePlayCharacterPreset,
+  getRolePlayCharacterPresetByVoiceId,
+  rolePlayCharacterPresets,
+} from "@/src/lib/roleplays/characterPresets";
+import {
   fetchRolePlayConfig,
   getStoredRolePlayConfig,
   persistRolePlayConfig,
@@ -42,7 +48,7 @@ const defaultObjectives: Objective[] = [
 
 const steps = ["Plan Role Play", "AI Character Customization", "Role Play Settings"];
 
-type BuilderAction = "draft" | "publish" | "preview";
+type BuilderAction = "draft" | "publish" | "preview" | "unpublish";
 type BuilderActionPhase = "loading" | "completing" | "success";
 
 type AssignableTrainee = {
@@ -51,6 +57,66 @@ type AssignableTrainee = {
   name: string;
   role: "trainee" | "course_admin";
 };
+
+type TranscriptRolePlayDraft = {
+  meetingTitle: string;
+  scenario: string;
+  aiCustomerKeyPoints: string[];
+  originalCallSummary: string;
+  aiCustomerBehavior: string;
+  learnerRole: string;
+  characterName: string;
+  characterRole: string;
+  personalityBackground: string;
+  greetingMessage: string;
+  durationMinutes: number;
+  learnerGoals: Objective[];
+  evaluatorPrompt: string;
+  privacyNotes: string[];
+};
+
+function inferCharacterPresetId(character?: { presetId?: string; voiceId?: string; name?: string }) {
+  return (
+    getRolePlayCharacterPreset(character?.presetId)?.id ??
+    getRolePlayCharacterPresetByVoiceId(character?.voiceId)?.id ??
+    rolePlayCharacterPresets.find((preset) => preset.name === character?.name)?.id ??
+    defaultRolePlayCharacterPreset.id
+  );
+}
+
+function replaceDraftCharacterName(value: string, draftName: string, selectedName: string) {
+  const normalizedDraftName = draftName.trim();
+
+  if (!normalizedDraftName || normalizedDraftName === selectedName) {
+    return value;
+  }
+
+  return value.replaceAll(normalizedDraftName, selectedName);
+}
+
+function linesToList(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function listToLines(items: string[] | undefined) {
+  return (items ?? []).filter(Boolean).join("\n");
+}
+
+function isoToUtcDateTimeInput(value: string | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 16);
+}
+
+function utcDateTimeInputToIso(value: string) {
+  if (!value) return undefined;
+  const date = new Date(`${value}:00.000Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
 
 function wait(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -96,21 +162,41 @@ export function RolePlayBuilder({
     "A customer is frustrated because their production video session had quality issues and their previous support case did not produce clear next steps.",
   );
   const [learnerRole, setLearnerRole] = useState("Customer Support Engineer");
-  const [characterName, setCharacterName] = useState("Morgan Lee");
+  const [characterPresetId, setCharacterPresetId] = useState<string>(
+    defaultRolePlayCharacterPreset.id,
+  );
+  const [characterName, setCharacterName] = useState<string>(defaultRolePlayCharacterPreset.name);
+  const [characterVoiceId, setCharacterVoiceId] = useState<string>(
+    defaultRolePlayCharacterPreset.voiceId,
+  );
   const [characterRole, setCharacterRole] = useState("Enterprise customer escalation contact");
   const [personalityBackground, setPersonalityBackground] = useState(
-    "Morgan is direct, time-sensitive, and skeptical after repeating the issue to multiple teams. They become more cooperative when the engineer shows ownership and asks specific diagnostic questions.",
+    `${defaultRolePlayCharacterPreset.name} is direct, time-sensitive, and skeptical after repeating the issue to multiple teams. They become more cooperative when the engineer shows ownership and asks specific diagnostic questions.`,
   );
   const [greetingMessage, setGreetingMessage] = useState(
     "I have already explained this issue several times. Can you actually help me get this resolved?",
   );
+  const [aiCustomerKeyPointsText, setAiCustomerKeyPointsText] = useState("");
+  const [originalCallSummary, setOriginalCallSummary] = useState("");
+  const [aiCustomerBehavior, setAiCustomerBehavior] = useState("");
   const [meetingTitle, setMeetingTitle] = useState("Escalated Video Quality Support Call");
   const [durationMinutes, setDurationMinutes] = useState(8);
+  const [deadlineDateTimeUtc, setDeadlineDateTimeUtc] = useState("");
+  const [deadlineTimezone, setDeadlineTimezone] = useState("UTC");
+  const [attemptOverrides, setAttemptOverrides] =
+    useState<RolePlayConfig["settings"]["attemptOverrides"]>({});
   const [learnerGoals, setLearnerGoals] = useState<Objective[]>(defaultObjectives);
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(evaluatorPromptDefault);
   const [assignedTraineeIds, setAssignedTraineeIds] = useState<string[]>([]);
   const [trainees, setTrainees] = useState<AssignableTrainee[]>([]);
   const [traineeLoadError, setTraineeLoadError] = useState<string | null>(null);
+  const [showTranscriptGenerator, setShowTranscriptGenerator] = useState(false);
+  const [transcriptText, setTranscriptText] = useState("");
+  const [transcriptFileName, setTranscriptFileName] = useState<string | null>(null);
+  const [isGeneratingFromTranscript, setIsGeneratingFromTranscript] = useState(false);
+  const [isGeneratingScenarioAssist, setIsGeneratingScenarioAssist] = useState(false);
+  const [transcriptGenerateMessage, setTranscriptGenerateMessage] = useState<string | null>(null);
+  const [transcriptPrivacyNotes, setTranscriptPrivacyNotes] = useState<string[]>([]);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
   const [activeBuilderAction, setActiveBuilderAction] = useState<BuilderAction | null>(null);
   const [builderActionPhase, setBuilderActionPhase] = useState<BuilderActionPhase>("loading");
@@ -184,6 +270,7 @@ export function RolePlayBuilder({
       setCurrentRolePlayId(null);
       setCurrentStatus("draft");
       setCreatedAt(null);
+      setAttemptOverrides({});
       setEditAccessDenied(false);
       return;
     }
@@ -219,12 +306,22 @@ export function RolePlayBuilder({
         setCreatedAt(stored.createdAt ?? null);
         setScenario(stored.plan.scenario);
         setLearnerRole(stored.plan.learnerRole);
-        setCharacterName(stored.character.name);
+        const presetId = inferCharacterPresetId(stored.character);
+        const preset = getRolePlayCharacterPreset(presetId) ?? defaultRolePlayCharacterPreset;
+        setCharacterPresetId(preset.id);
+        setCharacterVoiceId(preset.voiceId);
+        setCharacterName(preset.name);
         setCharacterRole(stored.character.role);
         setPersonalityBackground(stored.character.personalityBackground);
         setGreetingMessage(stored.character.greetingMessage);
+        setAiCustomerKeyPointsText(listToLines(stored.settings.aiCustomerKeyPoints));
+        setOriginalCallSummary(stored.settings.originalCallSummary ?? "");
+        setAiCustomerBehavior(stored.settings.aiCustomerBehavior ?? "");
         setMeetingTitle(stored.settings.meetingTitle);
         setDurationMinutes(stored.settings.durationMinutes);
+        setDeadlineDateTimeUtc(isoToUtcDateTimeInput(stored.settings.deadlineAt));
+        setDeadlineTimezone(stored.settings.deadlineTimezone ?? "UTC");
+        setAttemptOverrides(stored.settings.attemptOverrides ?? {});
         setLearnerGoals(
           stored.settings.learnerGoals.length > 0 ? stored.settings.learnerGoals : defaultObjectives,
         );
@@ -246,6 +343,9 @@ export function RolePlayBuilder({
         aiCharacterRole: characterRole,
         personalityBackground,
         greetingMessage,
+        aiCustomerKeyPoints: linesToList(aiCustomerKeyPointsText),
+        originalCallSummary,
+        aiCustomerBehavior,
         learnerGoals,
       }),
     [
@@ -253,14 +353,33 @@ export function RolePlayBuilder({
       learnerRole,
       characterName,
       characterRole,
+      characterVoiceId,
       personalityBackground,
       greetingMessage,
+      aiCustomerKeyPointsText,
+      originalCallSummary,
+      aiCustomerBehavior,
       learnerGoals,
     ],
   );
 
+  function selectCharacterPreset(presetId: string) {
+    const preset = getRolePlayCharacterPreset(presetId) ?? defaultRolePlayCharacterPreset;
+    const previousName = characterName;
+
+    setCharacterPresetId(preset.id);
+    setCharacterName(preset.name);
+    setCharacterVoiceId(preset.voiceId);
+    setPersonalityBackground((current) =>
+      replaceDraftCharacterName(current, previousName, preset.name),
+    );
+    setGreetingMessage((current) => replaceDraftCharacterName(current, previousName, preset.name));
+  }
+
   function buildRolePlayConfig(status: RolePlayStatus): RolePlayConfig {
     const now = new Date().toISOString();
+    const selectedPreset =
+      getRolePlayCharacterPreset(characterPresetId) ?? defaultRolePlayCharacterPreset;
 
     return {
       id: currentRolePlayId ?? createId(),
@@ -272,8 +391,10 @@ export function RolePlayBuilder({
         learnerRole,
       },
       character: {
+        presetId: selectedPreset.id,
         name: characterName,
         role: characterRole,
+        voiceId: characterVoiceId || selectedPreset.voiceId,
         personalityBackground,
         greetingMessage,
       },
@@ -281,6 +402,12 @@ export function RolePlayBuilder({
         meetingTitle,
         durationMinutes,
         learnerGoals,
+        aiCustomerKeyPoints: linesToList(aiCustomerKeyPointsText),
+        originalCallSummary,
+        aiCustomerBehavior,
+        deadlineAt: utcDateTimeInputToIso(deadlineDateTimeUtc),
+        deadlineTimezone: deadlineTimezone.trim() || "UTC",
+        attemptOverrides,
         evaluatorPrompt,
         assignedTraineeIds,
       },
@@ -312,9 +439,12 @@ export function RolePlayBuilder({
       setCurrentRolePlayId(saved.id);
       setCurrentStatus(saved.status);
       setCreatedAt(saved.createdAt ?? null);
+      setAttemptOverrides(saved.settings.attemptOverrides ?? {});
       await completeBuilderAction(
         action === "preview"
           ? "Preview ready."
+          : action === "unpublish"
+            ? "Role play unpublished and saved as draft."
           : status === "published"
             ? "Role play published."
             : "Draft saved.",
@@ -375,12 +505,146 @@ export function RolePlayBuilder({
     });
   }
 
+  async function loadTranscriptFile(file: File | undefined) {
+    if (!file) {
+      return;
+    }
+
+    setTranscriptFileName(file.name);
+    setTranscriptGenerateMessage(null);
+    setTranscriptText(await file.text());
+  }
+
+  function applyTranscriptDraft(draft: TranscriptRolePlayDraft) {
+    const selectedPreset =
+      getRolePlayCharacterPreset(characterPresetId) ?? defaultRolePlayCharacterPreset;
+
+    setMeetingTitle(draft.meetingTitle);
+    setScenario(draft.scenario);
+    setLearnerRole(draft.learnerRole);
+    setCharacterName(selectedPreset.name);
+    setCharacterVoiceId(selectedPreset.voiceId);
+    setCharacterRole(draft.characterRole);
+    setPersonalityBackground(
+      replaceDraftCharacterName(draft.personalityBackground, draft.characterName, selectedPreset.name),
+    );
+    setGreetingMessage(
+      replaceDraftCharacterName(draft.greetingMessage, draft.characterName, selectedPreset.name),
+    );
+    setAiCustomerKeyPointsText(listToLines(draft.aiCustomerKeyPoints));
+    setOriginalCallSummary(draft.originalCallSummary);
+    setAiCustomerBehavior(
+      replaceDraftCharacterName(draft.aiCustomerBehavior, draft.characterName, selectedPreset.name),
+    );
+    setDurationMinutes(draft.durationMinutes);
+    setLearnerGoals(draft.learnerGoals.length > 0 ? draft.learnerGoals : defaultObjectives);
+    setEvaluatorPrompt(draft.evaluatorPrompt);
+    setTranscriptPrivacyNotes(draft.privacyNotes);
+  }
+
+  async function generateFromTranscript() {
+    setTranscriptGenerateMessage(null);
+    setDraftMessage(null);
+
+    if (transcriptText.trim().length < 80) {
+      setTranscriptGenerateMessage("Add at least 80 characters of transcript context first.");
+      return;
+    }
+
+    setIsGeneratingFromTranscript(true);
+
+    try {
+      const response = await fetch("/api/roleplays/generate-from-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: transcriptText }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        draft?: TranscriptRolePlayDraft;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.draft) {
+        throw new Error(payload.error ?? `Unable to generate draft. HTTP ${response.status}.`);
+      }
+
+      applyTranscriptDraft(payload.draft);
+      setStep(0);
+      setShowTranscriptGenerator(false);
+      setTranscriptGenerateMessage(
+        "Generated a draft from the transcript. Review every field before saving or publishing.",
+      );
+    } catch (error) {
+      setTranscriptGenerateMessage(
+        error instanceof Error ? error.message : "Unable to generate a draft from the transcript.",
+      );
+    } finally {
+      setIsGeneratingFromTranscript(false);
+    }
+  }
+
+  async function generateScenarioFromTranscript() {
+    setTranscriptGenerateMessage(null);
+    setDraftMessage(null);
+
+    if (transcriptText.trim().length < 80) {
+      setShowTranscriptGenerator(true);
+      setTranscriptGenerateMessage(
+        "Upload or paste a transcript first, then AI Assist can rewrite only the scenario.",
+      );
+      return;
+    }
+
+    setIsGeneratingScenarioAssist(true);
+
+    try {
+      const response = await fetch("/api/roleplays/generate-from-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: transcriptText }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        draft?: TranscriptRolePlayDraft;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.draft) {
+        throw new Error(payload.error ?? `Unable to generate scenario. HTTP ${response.status}.`);
+      }
+
+      setScenario(payload.draft.scenario);
+      setAiCustomerKeyPointsText(listToLines(payload.draft.aiCustomerKeyPoints));
+      setOriginalCallSummary(payload.draft.originalCallSummary);
+      setAiCustomerBehavior(
+        replaceDraftCharacterName(
+          payload.draft.aiCustomerBehavior,
+          payload.draft.characterName,
+          characterName,
+        ),
+      );
+      setTranscriptPrivacyNotes(payload.draft.privacyNotes);
+      setTranscriptGenerateMessage(
+        "AI Assist updated the scenario and prompt-only AI customer talking points from the transcript.",
+      );
+    } catch (error) {
+      setTranscriptGenerateMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to generate a scenario from the transcript.",
+      );
+    } finally {
+      setIsGeneratingScenarioAssist(false);
+    }
+  }
+
   const progressPercent = Math.round(((step + 1) / steps.length) * 100);
   const isFinalStep = step === steps.length - 1;
   const isBuilderActionRunning = Boolean(activeBuilderAction);
   const activeBuilderActionLabel =
     activeBuilderAction === "draft"
       ? "Saving draft"
+      : activeBuilderAction === "unpublish"
+        ? "Unpublishing role play"
       : activeBuilderAction === "publish"
         ? "Publishing role play"
         : activeBuilderAction === "preview"
@@ -389,12 +653,16 @@ export function RolePlayBuilder({
   const actionSuccessTitle =
     activeBuilderAction === "publish"
       ? "Role play published"
+      : activeBuilderAction === "unpublish"
+        ? "Role play unpublished"
       : activeBuilderAction === "draft"
         ? "Draft saved"
         : "Preview ready";
   const actionSuccessBody =
     activeBuilderAction === "publish"
       ? "Your course is now available in Preview Created Courses. Redirecting you back to the course list."
+      : activeBuilderAction === "unpublish"
+        ? "Your course is now saved as a draft and hidden from learners. Redirecting you back to the course list."
       : activeBuilderAction === "draft"
         ? "Your draft has been saved. Redirecting you back to Preview Created Courses."
         : "Your learner-facing preview is ready.";
@@ -704,24 +972,151 @@ export function RolePlayBuilder({
           <section className="rounded-3xl border border-blue-100 bg-white p-6 shadow-soft">
             {step === 0 && (
               <div className="space-y-5">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-primary">Step 1</p>
-                  <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                    Plan Role Play
-                  </h2>
-                  <p className="mt-2 text-sm text-slate-500">
-                    Define the learner context and the situation the AI customer should bring into
-                    the meeting.
-                  </p>
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-primary">Step 1</p>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+                      Plan Role Play
+                    </h2>
+                    <p className="mt-2 text-sm text-slate-500">
+                      Define the learner context and the situation the AI customer should bring into
+                      the meeting.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTranscriptGenerator((current) => !current);
+                      setTranscriptGenerateMessage(null);
+                    }}
+                    className="inline-flex items-center justify-center rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 shadow-sm transition hover:bg-cyan-100"
+                    aria-expanded={showTranscriptGenerator}
+                  >
+                    Generate from Transcript
+                  </button>
                 </div>
+                {showTranscriptGenerator && (
+                <div className="rounded-3xl border border-cyan-100 bg-cyan-50/60 p-5">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.2em] text-cyan-700">
+                        Generate from real call
+                      </p>
+                      <h3 className="mt-2 text-lg font-semibold tracking-tight text-slate-950">
+                        Upload or paste a customer-call transcript
+                      </h3>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                        The generator creates an anonymized draft scenario, customer persona,
+                        greeting, and learner goals. Review the output for privacy and accuracy
+                        before saving.
+                      </p>
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl border border-cyan-200 bg-white px-4 py-2 text-sm font-semibold text-cyan-800 shadow-sm transition hover:bg-cyan-50">
+                      Upload (.vtt, .txt)
+                      <input
+                        type="file"
+                        accept=".vtt,.txt,text/vtt,text/plain"
+                        className="sr-only"
+                        onChange={(event) =>
+                          void loadTranscriptFile(event.currentTarget.files?.[0])
+                        }
+                      />
+                    </label>
+                  </div>
+                  {transcriptFileName && (
+                    <p className="mt-3 text-xs font-semibold text-cyan-800">
+                      Loaded file: {transcriptFileName}
+                    </p>
+                  )}
+                  <label className="mt-4 block space-y-2">
+                    <span className="text-sm font-medium text-slate-700">Transcript</span>
+                    <textarea
+                      value={transcriptText}
+                      onChange={(event) => {
+                        setTranscriptText(event.target.value);
+                        setTranscriptFileName(null);
+                      }}
+                      rows={7}
+                      placeholder="Paste the actual call transcript here. Avoid adding account IDs, emails, phone numbers, or other sensitive data when possible."
+                      className="w-full rounded-2xl border border-cyan-100 bg-white/90 px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-cyan-500 focus:bg-white focus:ring-4 focus:ring-cyan-100"
+                    />
+                  </label>
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs leading-5 text-slate-500">
+                      The transcript is sent only to generate the draft. The builder saves the
+                      resulting scenario, not the raw transcript.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void generateFromTranscript()}
+                      disabled={isGeneratingFromTranscript || isBuilderActionRunning}
+                      className="rounded-2xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isGeneratingFromTranscript ? "Generating..." : "Generate Draft"}
+                    </button>
+                  </div>
+                  {transcriptGenerateMessage && (
+                    <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-3 text-sm font-medium text-cyan-800">
+                      {transcriptGenerateMessage}
+                    </div>
+                  )}
+                  {transcriptPrivacyNotes.length > 0 && (
+                    <div className="mt-4 rounded-2xl border border-amber-100 bg-amber-50 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
+                        Privacy review notes
+                      </p>
+                      <ul className="mt-2 space-y-1 text-sm leading-6 text-amber-900">
+                        {transcriptPrivacyNotes.map((note) => (
+                          <li key={note}>- {note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                )}
+                {transcriptGenerateMessage && !showTranscriptGenerator && (
+                  <div className="rounded-2xl border border-cyan-100 bg-cyan-50 p-3 text-sm font-medium text-cyan-800">
+                    {transcriptGenerateMessage}
+                  </div>
+                )}
                 <label className="block space-y-2">
-                  <span className="text-sm font-medium text-slate-700">Scenario</span>
+                  <span className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="text-sm font-medium text-slate-700">Scenario</span>
+                    <button
+                      type="button"
+                      onClick={() => void generateScenarioFromTranscript()}
+                      disabled={
+                        isGeneratingScenarioAssist ||
+                        isGeneratingFromTranscript ||
+                        isBuilderActionRunning
+                      }
+                      className="inline-flex items-center justify-center rounded-xl border border-blue-100 bg-white px-3 py-1.5 text-xs font-semibold text-primary shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isGeneratingScenarioAssist ? "Generating..." : "AI Assist"}
+                    </button>
+                  </span>
                   <textarea
                     value={scenario}
                     onChange={(event) => setScenario(event.target.value)}
                     rows={8}
                     className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
                   />
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    AI Customer Talking Points
+                  </span>
+                  <textarea
+                    value={aiCustomerKeyPointsText}
+                    onChange={(event) => setAiCustomerKeyPointsText(event.target.value)}
+                    rows={5}
+                    placeholder="One prompt-only talking point per line. These are added to the AI customer prompt, not the visible scenario."
+                    className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
+                  />
+                  <span className="block text-xs leading-5 text-slate-500">
+                    These points guide what the AI customer should naturally mention during the call.
+                    They are kept separate from the scenario brief.
+                  </span>
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">Learner Role</span>
@@ -746,13 +1141,30 @@ export function RolePlayBuilder({
                     repeatable.
                   </p>
                 </div>
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">AI Character</span>
+                  <select
+                    value={characterPresetId}
+                    onChange={(event) => selectCharacterPreset(event.target.value)}
+                    className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
+                  >
+                    {rolePlayCharacterPresets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.name} - {preset.gender === "female" ? "Female" : "Male"}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="block text-xs leading-5 text-slate-500">
+                    The matching voice is selected automatically for the chosen character.
+                  </span>
+                </label>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block space-y-2">
-                    <span className="text-sm font-medium text-slate-700">AI Character Name</span>
+                    <span className="text-sm font-medium text-slate-700">Selected Name</span>
                     <input
                       value={characterName}
-                      onChange={(event) => setCharacterName(event.target.value)}
-                      className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
+                      readOnly
+                      className="w-full rounded-2xl border border-blue-100 bg-slate-100/80 px-4 py-3 text-sm text-slate-700 outline-none"
                     />
                   </label>
                   <label className="block space-y-2">
@@ -797,6 +1209,39 @@ export function RolePlayBuilder({
                     coverage.
                   </p>
                 </div>
+                {currentRolePlayId && (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-950">Publishing Status</p>
+                        <p className="mt-1 text-xs leading-5 text-slate-500">
+                          {currentStatus === "published"
+                            ? "This course is visible to assigned learners. Use Unpublish to move it back to draft."
+                            : "This course is saved as a draft and hidden from learners until published."}
+                        </p>
+                      </div>
+                      <span
+                        className={`w-fit rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] ${
+                          currentStatus === "published"
+                            ? "border-emerald-200 bg-white text-emerald-700"
+                            : "border-amber-200 bg-white text-amber-700"
+                        }`}
+                      >
+                        {currentStatus === "published" ? "Published" : "Draft"}
+                      </span>
+                    </div>
+                    {currentStatus === "published" && (
+                      <button
+                        type="button"
+                        onClick={() => void save("draft", "unpublish")}
+                        disabled={isBuilderActionRunning}
+                        className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 shadow-sm transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Unpublish to Draft
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block space-y-2">
                     <span className="text-sm font-medium text-slate-700">Meeting Title</span>
@@ -819,6 +1264,32 @@ export function RolePlayBuilder({
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-sm font-medium text-slate-700">
+                      Deadline Date/Time
+                    </span>
+                    <input
+                      type="datetime-local"
+                      value={deadlineDateTimeUtc}
+                      onChange={(event) => setDeadlineDateTimeUtc(event.target.value)}
+                      className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
+                    />
+                    <span className="block text-xs leading-5 text-slate-500">
+                      Leave empty for no deadline. This value is saved as UTC.
+                    </span>
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-sm font-medium text-slate-700">Deadline Timezone</span>
+                    <input
+                      value={deadlineTimezone}
+                      onChange={(event) => setDeadlineTimezone(event.target.value)}
+                      placeholder="UTC"
+                      className="w-full rounded-2xl border border-blue-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-primary focus:bg-white focus:ring-4 focus:ring-blue-100"
+                    />
+                    <span className="block text-xs leading-5 text-slate-500">
+                      Use UTC by default, or enter an IANA timezone label for display.
+                    </span>
                   </label>
                 </div>
 
@@ -1011,11 +1482,17 @@ export function RolePlayBuilder({
             <div className="flex flex-wrap gap-2 sm:justify-end">
               <button
                 type="button"
-                onClick={() => void save("draft")}
+                onClick={() =>
+                  void save("draft", currentStatus === "published" ? "unpublish" : "draft")
+                }
                 disabled={isBuilderActionRunning}
-                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                className={`rounded-2xl border px-4 py-2 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                  currentStatus === "published"
+                    ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50"
+                }`}
               >
-                Save Draft
+                {currentStatus === "published" ? "Unpublish to Draft" : "Save Draft"}
               </button>
               {isFinalStep && (
                 <>

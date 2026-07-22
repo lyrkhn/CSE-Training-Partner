@@ -29,6 +29,11 @@ type EditDialogState = {
   isActive: boolean;
 };
 
+type DeadlineDraft = {
+  deadlineDateTimeUtc: string;
+  deadlineTimezone: string;
+};
+
 const defaultUserForm: UserForm = {
   name: "",
   email: "",
@@ -49,6 +54,35 @@ function formatDate(value?: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatDuration(minutes: number | null) {
+  if (minutes === null) return "N/A";
+  if (minutes < 1) return "<1 min";
+  return `${minutes} min`;
+}
+
+function isoToUtcDateTimeInput(value: string | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 16);
+}
+
+function utcDateTimeInputToIso(value: string) {
+  if (!value) return undefined;
+  const date = new Date(`${value}:00.000Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function assessmentCompletionMinutes(assessment: SavedFinalAssessment) {
+  const timestamps = assessment.transcript
+    .map((entry) => new Date(entry.timestamp).getTime())
+    .filter(Number.isFinite)
+    .sort((first, second) => first - second);
+
+  if (timestamps.length < 2) return null;
+  return Math.max(0, Math.round((timestamps[timestamps.length - 1] - timestamps[0]) / 60000));
 }
 
 function roleLabel(role: MockRole) {
@@ -88,6 +122,8 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [deadlineDrafts, setDeadlineDrafts] = useState<Record<string, DeadlineDraft>>({});
+  const [attemptOverrideDrafts, setAttemptOverrideDrafts] = useState<Record<string, number>>({});
   const [userForm, setUserForm] = useState<UserForm>(defaultUserForm);
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
@@ -97,18 +133,14 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
 
   async function refreshPanel() {
     setErrorMessage(null);
-    const [sessionResponse, usersResponse, roleplaysResponse, assessmentsResponse] = await Promise.all([
+    const [sessionResponse, roleplaysResponse, assessmentsResponse] = await Promise.all([
       fetch("/api/auth/session", { cache: "no-store" }),
-      fetch("/api/admin/users", { cache: "no-store" }),
       fetch("/api/roleplays", { cache: "no-store" }),
       fetch("/api/assessments", { cache: "no-store" }),
     ]);
 
     if (!sessionResponse.ok) {
       throw new Error(`Unable to load session. HTTP ${sessionResponse.status}.`);
-    }
-    if (!usersResponse.ok) {
-      throw new Error(`Unable to load users. HTTP ${usersResponse.status}.`);
     }
     if (!roleplaysResponse.ok) {
       throw new Error(`Unable to load courses. HTTP ${roleplaysResponse.status}.`);
@@ -117,17 +149,44 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
       throw new Error(`Unable to load exam scores. HTTP ${assessmentsResponse.status}.`);
     }
 
-    const usersPayload = (await usersResponse.json()) as { users?: SafeAuthUser[] };
     const sessionPayload = (await sessionResponse.json()) as { user?: AuthSessionUser };
+    const usersResponse =
+      sessionPayload.user?.role === "root_admin"
+        ? await fetch("/api/admin/users", { cache: "no-store" })
+        : await fetch("/api/users/trainees", { cache: "no-store" });
+
+    if (!usersResponse.ok) {
+      throw new Error(`Unable to load users. HTTP ${usersResponse.status}.`);
+    }
+
+    const usersPayload = (await usersResponse.json()) as { users?: SafeAuthUser[] };
     const roleplaysPayload = (await roleplaysResponse.json()) as { roleplays?: RolePlayConfig[] };
     const assessmentsPayload = (await assessmentsResponse.json()) as {
       assessments?: SavedFinalAssessment[];
     };
 
-    setCurrentUser(sessionPayload.user ?? null);
+    const nextCurrentUser = sessionPayload.user ?? null;
+    const nextRoleplays = Array.isArray(roleplaysPayload.roleplays) ? roleplaysPayload.roleplays : [];
+
+    setCurrentUser(nextCurrentUser);
     setUsers(Array.isArray(usersPayload.users) ? usersPayload.users : []);
-    setRoleplays(Array.isArray(roleplaysPayload.roleplays) ? roleplaysPayload.roleplays : []);
+    setRoleplays(
+      nextCurrentUser?.role === "course_admin" && section === "courses"
+        ? nextRoleplays.filter((roleplay) => canUserManageRolePlay(nextCurrentUser, roleplay))
+        : nextRoleplays,
+    );
     setAssessments(Array.isArray(assessmentsPayload.assessments) ? assessmentsPayload.assessments : []);
+    setDeadlineDrafts(
+      Object.fromEntries(
+        nextRoleplays.map((roleplay) => [
+          roleplay.id,
+          {
+            deadlineDateTimeUtc: isoToUtcDateTimeInput(roleplay.settings.deadlineAt),
+            deadlineTimezone: roleplay.settings.deadlineTimezone ?? "UTC",
+          },
+        ]),
+      ),
+    );
   }
 
   useEffect(() => {
@@ -192,6 +251,69 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
 
   function assessmentsForCourse(roleplayId: string) {
     return assessments.filter((assessment) => assessment.scenarioId === roleplayId);
+  }
+
+  function analyticsForCourse(courseAssessments: SavedFinalAssessment[]) {
+    const scores = courseAssessments.map((assessment) => assessment.overallScore);
+    const passed = courseAssessments.filter((assessment) => assessment.outcome === "passed").length;
+    const completionTimes = courseAssessments
+      .map(assessmentCompletionMinutes)
+      .filter((value): value is number => value !== null);
+    const scoreRanges = [
+      { label: "0-59%", min: 0, max: 59 },
+      { label: "60-79%", min: 60, max: 79 },
+      { label: "80-89%", min: 80, max: 89 },
+      { label: "90-100%", min: 90, max: 100 },
+    ].map((range) => ({
+      ...range,
+      count: scores.filter((score) => score >= range.min && score <= range.max).length,
+    }));
+    const learnerBest = new Map<string, SavedFinalAssessment>();
+
+    for (const assessment of courseAssessments) {
+      const key = assessment.learnerId ?? assessment.learnerEmail ?? assessment.id;
+      const existing = learnerBest.get(key);
+      if (!existing || assessment.overallScore > existing.overallScore) {
+        learnerBest.set(key, assessment);
+      }
+    }
+
+    return {
+      totalAttempts: courseAssessments.length,
+      passRate:
+        courseAssessments.length === 0 ? null : Math.round((passed / courseAssessments.length) * 100),
+      averageScore:
+        scores.length === 0
+          ? null
+          : Math.round(scores.reduce((total, score) => total + score, 0) / scores.length),
+      averageCompletionTime:
+        completionTimes.length === 0
+          ? null
+          : Math.round(
+              completionTimes.reduce((total, minutes) => total + minutes, 0) /
+                completionTimes.length,
+            ),
+      scoreRanges,
+      topPerformers: [...learnerBest.values()]
+        .sort((first, second) => second.overallScore - first.overallScore)
+        .slice(0, 5),
+    };
+  }
+
+  function attemptNumberForAssessment(
+    courseAssessments: SavedFinalAssessment[],
+    assessment: SavedFinalAssessment,
+  ) {
+    return (
+      courseAssessments
+        .filter(
+          (item) =>
+            (item.learnerId && item.learnerId === assessment.learnerId) ||
+            (!item.learnerId && item.learnerEmail === assessment.learnerEmail),
+        )
+        .sort((first, second) => first.createdAt.localeCompare(second.createdAt))
+        .findIndex((item) => item.id === assessment.id) + 1
+    );
   }
 
   function learnerName(assessment: SavedFinalAssessment) {
@@ -327,6 +449,76 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
 
     setMessage("Course deleted.");
     await refreshPanel();
+  }
+
+  async function saveRoleplaySettings(
+    roleplay: RolePlayConfig,
+    settings: Partial<RolePlayConfig["settings"]>,
+    successMessage: string,
+  ) {
+    setMessage(null);
+    setErrorMessage(null);
+    const response = await fetch("/api/roleplays", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...roleplay,
+        settings: {
+          ...roleplay.settings,
+          ...settings,
+        },
+      }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+
+    if (!response.ok) {
+      setErrorMessage(payload.error ?? `Unable to update course settings. HTTP ${response.status}.`);
+      return;
+    }
+
+    setMessage(successMessage);
+    await refreshPanel();
+  }
+
+  async function saveDeadline(roleplay: RolePlayConfig) {
+    const draft = deadlineDrafts[roleplay.id] ?? {
+      deadlineDateTimeUtc: "",
+      deadlineTimezone: "UTC",
+    };
+    await saveRoleplaySettings(
+      roleplay,
+      {
+        deadlineAt: utcDateTimeInputToIso(draft.deadlineDateTimeUtc),
+        deadlineTimezone: draft.deadlineTimezone.trim() || "UTC",
+      },
+      "Course deadline updated.",
+    );
+  }
+
+  async function saveAttemptOverride(roleplay: RolePlayConfig, userId: string) {
+    const key = `${roleplay.id}:${userId}`;
+    const maxAttempts = Math.max(1, Math.floor(attemptOverrideDrafts[key] ?? 0));
+    const nextOverrides = {
+      ...(roleplay.settings.attemptOverrides ?? {}),
+      [userId]: {
+        maxAttempts,
+        updatedAt: new Date().toISOString(),
+        updatedBy: currentUser
+          ? {
+              id: currentUser.id,
+              name: currentUser.name,
+              email: currentUser.email,
+              role: currentUser.role,
+            }
+          : undefined,
+      },
+    };
+
+    await saveRoleplaySettings(
+      roleplay,
+      { attemptOverrides: nextOverrides },
+      "Learner attempt allowance updated.",
+    );
   }
 
   if (isLoading) {
@@ -577,6 +769,10 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                 const courseAssessments = assessmentsForCourse(roleplay.id);
                 const isExpanded = expandedCourseId === roleplay.id;
                 const canManage = currentUser ? canUserManageRolePlay(currentUser, roleplay) : false;
+                const courseAnalytics = analyticsForCourse(courseAssessments);
+                const assignedUsers = users.filter((user) =>
+                  roleplay.settings.assignedTraineeIds?.includes(user.id),
+                );
                 const averageScore =
                   courseAssessments.length === 0
                     ? null
@@ -604,6 +800,12 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                         </p>
                         <p className="mt-3 line-clamp-2 max-w-4xl text-sm leading-6 text-slate-600">
                           {roleplay.plan.scenario}
+                        </p>
+                        <p className="mt-3 inline-flex rounded-2xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 ring-1 ring-blue-100">
+                          Deadline: {formatDate(roleplay.settings.deadlineAt)}{" "}
+                          {roleplay.settings.deadlineAt
+                            ? `(${roleplay.settings.deadlineTimezone ?? "UTC"})`
+                            : ""}
                         </p>
                         <div className="mt-4 grid gap-3 text-sm text-slate-600 md:grid-cols-2 xl:grid-cols-5">
                           <div className="rounded-2xl bg-white p-3 ring-1 ring-blue-100">
@@ -683,24 +885,222 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                     {isExpanded && (
                       <div className="mt-5 rounded-3xl border border-blue-100 bg-white p-4">
                         <div className="flex items-center justify-between gap-4">
-                          <h4 className="font-semibold text-slate-950">Users who took this exam</h4>
+                          <h4 className="font-semibold text-slate-950">Course analytics and attempts</h4>
                           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
                             {courseAssessments.length} saved scores
                           </span>
                         </div>
+                        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                          {[
+                            { label: "Total Attempts", value: courseAnalytics.totalAttempts },
+                            {
+                              label: "Pass Rate",
+                              value:
+                                courseAnalytics.passRate === null
+                                  ? "N/A"
+                                  : `${courseAnalytics.passRate}%`,
+                            },
+                            {
+                              label: "Average Score",
+                              value:
+                                courseAnalytics.averageScore === null
+                                  ? "N/A"
+                                  : `${courseAnalytics.averageScore}%`,
+                            },
+                            {
+                              label: "Avg Completion",
+                              value: formatDuration(courseAnalytics.averageCompletionTime),
+                            },
+                            {
+                              label: "Top Score",
+                              value:
+                                courseAnalytics.topPerformers[0]?.overallScore === undefined
+                                  ? "N/A"
+                                  : `${courseAnalytics.topPerformers[0].overallScore}%`,
+                            },
+                          ].map((item) => (
+                            <div key={item.label} className="rounded-2xl bg-blue-50/70 p-3">
+                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                                {item.label}
+                              </p>
+                              <p className="mt-1 text-lg font-semibold text-slate-950">
+                                {item.value}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+
+                        {canManage && (
+                          <div className="mt-4 grid gap-4 rounded-3xl border border-blue-100 bg-blue-50/40 p-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+                            <label className="space-y-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                Deadline date/time (UTC)
+                              </span>
+                              <input
+                                type="datetime-local"
+                                value={deadlineDrafts[roleplay.id]?.deadlineDateTimeUtc ?? ""}
+                                onChange={(event) =>
+                                  setDeadlineDrafts((current) => ({
+                                    ...current,
+                                    [roleplay.id]: {
+                                      deadlineDateTimeUtc: event.target.value,
+                                      deadlineTimezone:
+                                        current[roleplay.id]?.deadlineTimezone ??
+                                        roleplay.settings.deadlineTimezone ??
+                                        "UTC",
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-2xl border border-blue-100 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-4 focus:ring-blue-100"
+                              />
+                            </label>
+                            <label className="space-y-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                Timezone label
+                              </span>
+                              <input
+                                value={deadlineDrafts[roleplay.id]?.deadlineTimezone ?? "UTC"}
+                                onChange={(event) =>
+                                  setDeadlineDrafts((current) => ({
+                                    ...current,
+                                    [roleplay.id]: {
+                                      deadlineDateTimeUtc:
+                                        current[roleplay.id]?.deadlineDateTimeUtc ??
+                                        isoToUtcDateTimeInput(roleplay.settings.deadlineAt),
+                                      deadlineTimezone: event.target.value,
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-2xl border border-blue-100 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-4 focus:ring-blue-100"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => void saveDeadline(roleplay)}
+                              className="rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+                            >
+                              Save Deadline
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                          <div className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                              Score Summary
+                            </p>
+                            <div className="mt-3 space-y-2">
+                              {courseAnalytics.scoreRanges.map((range) => (
+                                <div key={range.label} className="flex items-center gap-3 text-sm">
+                                  <span className="w-20 font-semibold text-slate-700">{range.label}</span>
+                                  <div className="h-2 flex-1 rounded-full bg-white">
+                                    <div
+                                      className="h-2 rounded-full bg-primary"
+                                      style={{
+                                        width:
+                                          courseAnalytics.totalAttempts === 0
+                                            ? "0%"
+                                            : `${Math.round((range.count / courseAnalytics.totalAttempts) * 100)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="w-8 text-right font-semibold text-slate-600">
+                                    {range.count}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                              Top Performers
+                            </p>
+                            <div className="mt-3 space-y-2">
+                              {courseAnalytics.topPerformers.length === 0 ? (
+                                <p className="text-sm text-slate-500">No completed attempts yet.</p>
+                              ) : (
+                                courseAnalytics.topPerformers.map((assessment, index) => (
+                                  <div
+                                    key={assessment.id}
+                                    className="flex items-center justify-between rounded-2xl bg-white px-3 py-2 text-sm"
+                                  >
+                                    <span className="font-semibold text-slate-800">
+                                      #{index + 1} {learnerName(assessment)}
+                                    </span>
+                                    <span className="font-bold text-primary">
+                                      {assessment.overallScore}%
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {canManage && assignedUsers.length > 0 && (
+                          <div className="mt-4 rounded-3xl border border-amber-100 bg-amber-50 p-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
+                              Attempt Overrides
+                            </p>
+                            <p className="mt-1 text-sm text-amber-900">
+                              Increase a learner's max attempts if they missed the deadline or need
+                              one more retake.
+                            </p>
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              {assignedUsers.map((learner) => {
+                                const override = roleplay.settings.attemptOverrides?.[learner.id];
+                                const key = `${roleplay.id}:${learner.id}`;
+                                return (
+                                  <div key={learner.id} className="rounded-2xl bg-white p-3">
+                                    <p className="font-semibold text-slate-950">{learner.name}</p>
+                                    <p className="text-xs text-slate-500">{learner.email}</p>
+                                    <div className="mt-3 flex items-center gap-2">
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        value={
+                                          attemptOverrideDrafts[key] ??
+                                          override?.maxAttempts ??
+                                          2
+                                        }
+                                        onChange={(event) =>
+                                          setAttemptOverrideDrafts((current) => ({
+                                            ...current,
+                                            [key]: Number(event.target.value),
+                                          }))
+                                        }
+                                        className="w-24 rounded-xl border border-amber-100 px-3 py-2 text-sm outline-none focus:border-amber-300"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => void saveAttemptOverride(roleplay, learner.id)}
+                                        className="rounded-xl bg-amber-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-amber-600"
+                                      >
+                                        Save max attempts
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
                         {courseAssessments.length === 0 ? (
                           <p className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
                             No users have completed this course exam yet.
                           </p>
                         ) : (
                           <div className="mt-4 overflow-x-auto">
-                            <table className="w-full min-w-[720px] text-left text-sm">
+                            <table className="w-full min-w-[980px] text-left text-sm">
                               <thead className="text-xs uppercase tracking-[0.16em] text-slate-400">
                                 <tr>
                                   <th className="border-b border-blue-100 px-3 py-3">User</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Attempt</th>
                                   <th className="border-b border-blue-100 px-3 py-3">Email</th>
                                   <th className="border-b border-blue-100 px-3 py-3">Score</th>
                                   <th className="border-b border-blue-100 px-3 py-3">Outcome</th>
+                                  <th className="border-b border-blue-100 px-3 py-3">Coach Feedback</th>
                                   <th className="border-b border-blue-100 px-3 py-3">Completed</th>
                                   <th className="border-b border-blue-100 px-3 py-3">Review</th>
                                 </tr>
@@ -710,6 +1110,9 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                                   <tr key={assessment.id} className="text-slate-700">
                                     <td className="border-b border-blue-50 px-3 py-3 font-semibold text-slate-950">
                                       {learnerName(assessment)}
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3 font-semibold">
+                                      #{attemptNumberForAssessment(courseAssessments, assessment)}
                                     </td>
                                     <td className="border-b border-blue-50 px-3 py-3">
                                       {assessment.learnerEmail ?? "Not recorded"}
@@ -721,6 +1124,11 @@ export function ControlPanel({ section = "users" }: { section?: ControlPanelSect
                                       <span className={`rounded-full px-3 py-1 text-xs font-semibold ${outcomeClass(assessment.outcome)}`}>
                                         {assessment.outcome === "passed" ? "Passed" : "Needs Review"}
                                       </span>
+                                    </td>
+                                    <td className="border-b border-blue-50 px-3 py-3">
+                                      <p className="line-clamp-2 max-w-sm text-xs leading-5 text-slate-600">
+                                        {assessment.summary}
+                                      </p>
                                     </td>
                                     <td className="border-b border-blue-50 px-3 py-3">
                                       {formatDate(assessment.createdAt)}

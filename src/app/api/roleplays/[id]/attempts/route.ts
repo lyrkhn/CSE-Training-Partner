@@ -41,7 +41,7 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ attemptStatus: null, unlimited: true });
   }
 
-  const attemptStatus = await getServerRolePlayAttemptStatus(session.id, id);
+  const attemptStatus = await getServerRolePlayAttemptStatus(session.id, id, roleplay);
   return NextResponse.json({ attemptStatus });
 }
 
@@ -76,11 +76,11 @@ export async function POST(_request: Request, context: RouteContext) {
     );
   }
 
-  const currentStatus = await getServerRolePlayAttemptStatus(session.id, id);
+  const currentStatus = await getServerRolePlayAttemptStatus(session.id, id, roleplay);
   if (currentStatus.locked) {
     return NextResponse.json({ attemptStatus: currentStatus });
   }
 
-  const attemptStatus = await recordServerRolePlayAttemptCompletion(session.id, id);
+  const attemptStatus = await recordServerRolePlayAttemptCompletion(session.id, id, roleplay);
   return NextResponse.json({ attemptStatus });
 }

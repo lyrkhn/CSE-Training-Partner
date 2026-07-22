@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { appendActivityLogEntry } from "@/src/lib/activity-log/serverStorage";
 import { getAuthSession } from "@/src/lib/auth/session";
 import { canUserAccessRolePlay, canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import {
@@ -71,6 +72,32 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Roleplay not found." }, { status: 404 });
   }
 
+  const actor = {
+    id: session.id,
+    email: session.email,
+    name: session.name,
+    role: session.role,
+  };
+  const action = body.status === "published" ? "course_published" : "course_unpublished";
+
+  await appendActivityLogEntry({
+    action,
+    actor,
+    target: {
+      id: roleplay.id,
+      type: "roleplay_course",
+      title: roleplay.settings.meetingTitle,
+    },
+    summary:
+      body.status === "published"
+        ? `${actor.name} published "${roleplay.settings.meetingTitle}".`
+        : `${actor.name} unpublished "${roleplay.settings.meetingTitle}".`,
+    metadata: {
+      previousStatus: existing.status,
+      nextStatus: body.status,
+    },
+  });
+
   return NextResponse.json({ roleplay });
 }
 
@@ -95,5 +122,30 @@ export async function DELETE(_request: Request, context: RouteContext) {
   }
 
   const deleted = await deleteRolePlayConfig(id);
+
+  if (deleted) {
+    const actor = {
+      id: session.id,
+      email: session.email,
+      name: session.name,
+      role: session.role,
+    };
+
+    await appendActivityLogEntry({
+      action: "course_deleted",
+      actor,
+      target: {
+        id: roleplay.id,
+        type: "roleplay_course",
+        title: roleplay.settings.meetingTitle,
+      },
+      summary: `${actor.name} deleted "${roleplay.settings.meetingTitle}".`,
+      metadata: {
+        previousStatus: roleplay.status,
+        ownerId: roleplay.createdBy?.id ?? null,
+      },
+    });
+  }
+
   return NextResponse.json({ deleted });
 }

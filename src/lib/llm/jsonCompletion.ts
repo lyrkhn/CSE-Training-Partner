@@ -300,6 +300,10 @@ export function getFinalAssessmentLlmConfig(): LlmConfig {
   };
 }
 
+export function getCoachFeedbackLlmConfig(): LlmConfig {
+  return getFinalAssessmentLlmConfig();
+}
+
 export function getObjectiveEvaluatorLlmConfig(): LlmConfig {
   const provider = normalizeProvider(
     asString(

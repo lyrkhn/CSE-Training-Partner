@@ -2,12 +2,8 @@ import { NextResponse } from "next/server";
 
 import { listFinalAssessments } from "@/src/lib/assessments/storage";
 import { getAuthSession } from "@/src/lib/auth/session";
-import { canUserAccessRolePlay } from "@/src/lib/roleplays/access";
+import { canUserAccessRolePlay, canUserManageRolePlay } from "@/src/lib/roleplays/access";
 import { listRolePlayConfigs } from "@/src/lib/roleplays/serverStorage";
-
-function isAdmin(role: string) {
-  return role === "root_admin" || role === "course_admin";
-}
 
 export async function GET() {
   try {
@@ -18,20 +14,28 @@ export async function GET() {
     }
 
     const assessments = await listFinalAssessments();
-    if (isAdmin(session.role)) {
+    if (session.role === "root_admin") {
       return NextResponse.json({ assessments });
     }
 
     const roleplays = await listRolePlayConfigs();
+    const accessibleRoleplays = roleplays.filter((roleplay) =>
+      canUserAccessRolePlay(session, roleplay),
+    );
     const accessibleScenarioIds = new Set(
+      accessibleRoleplays.map((roleplay) => roleplay.id),
+    );
+    const manageableScenarioIds = new Set(
       roleplays
-        .filter((roleplay) => canUserAccessRolePlay(session, roleplay))
+        .filter((roleplay) => canUserManageRolePlay(session, roleplay))
         .map((roleplay) => roleplay.id),
     );
 
     return NextResponse.json({
-      assessments: assessments.filter((assessment) =>
-        accessibleScenarioIds.has(assessment.scenarioId),
+      assessments: assessments.filter(
+        (assessment) =>
+          accessibleScenarioIds.has(assessment.scenarioId) &&
+          (manageableScenarioIds.has(assessment.scenarioId) || assessment.learnerId === session.id),
       ),
     });
   } catch (error) {

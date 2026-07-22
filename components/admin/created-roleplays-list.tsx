@@ -2,27 +2,33 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
+import {
+  BarChart3Icon,
+  EditIcon,
+  EyeIcon,
+  Trash2Icon,
+  UsersIcon,
+} from "@/components/ui/icons";
+import type { SavedFinalAssessment } from "@/src/lib/assessments/types";
 import type { AuthSessionUser } from "@/src/lib/auth/session";
 import { canUserManageRolePlay } from "@/src/lib/roleplays/access";
-import {
-  fetchRolePlayConfigs,
-  persistRolePlayStatus,
-  removeRolePlayConfig,
-} from "@/src/lib/roleplays/storage";
+import { analyticsForCourse } from "@/src/lib/roleplays/courseAnalytics";
+import { fetchRolePlayConfigs, removeRolePlayConfig } from "@/src/lib/roleplays/storage";
 import type { RolePlayConfig } from "@/src/lib/roleplays/types";
 
 function formatDate(value?: string) {
-  if (!value) {
-    return "Not recorded";
-  }
+  if (!value) return "Not set";
 
   return new Intl.DateTimeFormat("en-US", {
-    month: "2-digit",
-    day: "2-digit",
+    month: "short",
+    day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
   }).format(new Date(value));
 }
 
@@ -31,10 +37,10 @@ function StatusBadge({ status }: { status: RolePlayConfig["status"] }) {
 
   return (
     <span
-      className={`rounded-full px-3 py-1 text-xs font-semibold ${
+      className={`rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] ${
         isPublished
-          ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
-          : "bg-amber-50 text-amber-700 ring-1 ring-amber-200"
+          ? "border-emerald-200 bg-white text-emerald-700"
+          : "border-amber-200 bg-white text-amber-700"
       }`}
     >
       {isPublished ? "Published" : "Draft"}
@@ -42,28 +48,74 @@ function StatusBadge({ status }: { status: RolePlayConfig["status"] }) {
   );
 }
 
+function MetricCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-[1.75rem] border border-slate-200 bg-white p-7 shadow-sm">
+      <p className="text-sm font-medium text-slate-500">{label}</p>
+      <p className="mt-4 text-3xl font-bold tracking-tight text-slate-950">{value}</p>
+    </div>
+  );
+}
+
+function ActionIconLink({
+  href,
+  label,
+  children,
+}: {
+  href: string;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      title={label}
+      aria-label={label}
+      className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-blue-100"
+    >
+      {children}
+      <span className="sr-only">{label}</span>
+    </Link>
+  );
+}
+
+
 export function CreatedRoleplaysList() {
   const [roleplays, setRoleplays] = useState<RolePlayConfig[]>([]);
-  const [user, setUser] = useState<AuthSessionUser | null>(null);
+  const [assessments, setAssessments] = useState<SavedFinalAssessment[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  async function refreshRoleplays() {
-    setRoleplays(await fetchRolePlayConfigs());
+  async function loadRoleplays() {
+    const [sessionResponse, configs, assessmentsResponse] = await Promise.all([
+      fetch("/api/auth/session", { cache: "no-store" }),
+      fetchRolePlayConfigs(),
+      fetch("/api/assessments", { cache: "no-store" }),
+    ]);
+
+    let currentUser: AuthSessionUser | null = null;
+    if (sessionResponse.ok) {
+      const payload = (await sessionResponse.json()) as { user?: AuthSessionUser };
+      currentUser = payload.user ?? null;
+    }
+
+    setRoleplays(
+      currentUser ? configs.filter((roleplay) => canUserManageRolePlay(currentUser, roleplay)) : [],
+    );
+
+    if (assessmentsResponse.ok) {
+      const payload = (await assessmentsResponse.json()) as { assessments?: SavedFinalAssessment[] };
+      setAssessments(Array.isArray(payload.assessments) ? payload.assessments : []);
+    }
   }
 
   useEffect(() => {
-    void (async () => {
-      const [sessionResponse, configs] = await Promise.all([
-        fetch("/api/auth/session", { cache: "no-store" }),
-        fetchRolePlayConfigs(),
-      ]);
-
-      if (sessionResponse.ok) {
-        const payload = (await sessionResponse.json()) as { user?: AuthSessionUser };
-        setUser(payload.user ?? null);
-      }
-
-      setRoleplays(configs);
-    })();
+    void loadRoleplays()
+      .catch((error) => {
+        setErrorMessage(error instanceof Error ? error.message : "Unable to load created courses.");
+      })
+      .finally(() => setIsLoading(false));
   }, []);
 
   const counts = useMemo(
@@ -75,202 +127,147 @@ export function CreatedRoleplaysList() {
     [roleplays],
   );
 
-  async function updateStatus(rolePlayId: string, status: RolePlayConfig["status"]) {
-    await persistRolePlayStatus(rolePlayId, status);
-    await refreshRoleplays();
+  function assessmentsForCourse(roleplayId: string) {
+    return assessments.filter((assessment) => assessment.scenarioId === roleplayId);
   }
 
   async function deleteRolePlay(rolePlayId: string) {
-    if (!window.confirm("Delete this saved roleplay course?")) {
-      return;
-    }
+    if (!window.confirm("Delete this saved roleplay course?")) return;
 
-    await removeRolePlayConfig(rolePlayId);
-    await refreshRoleplays();
+    setMessage(null);
+    setErrorMessage(null);
+    try {
+      await removeRolePlayConfig(rolePlayId);
+      setMessage("Course deleted.");
+      await loadRoleplays();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to delete course.");
+    }
   }
 
   return (
     <section id="course-builder" className="space-y-6">
-      <header className="overflow-hidden rounded-3xl border border-blue-100 bg-hero-grid p-6 shadow-soft">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+      <header className="px-1">
+        <p className="text-xs font-bold uppercase tracking-[0.28em] text-slate-500">
+          Course Builder
+        </p>
+        <h1 className="mt-3 text-4xl font-bold tracking-tight text-slate-950">
+          Managed Roleplay Courses
+        </h1>
+        <p className="mt-3 max-w-4xl text-base leading-7 text-slate-600">
+          Courses you created through the roleplay workflow. Course admins can create, edit, and
+          monitor only their own courses; root admins can access all courses.
+        </p>
+      </header>
+
+      <div className="grid gap-5 md:grid-cols-3">
+        <MetricCard label="Managed Courses" value={counts.total} />
+        <MetricCard label="Draft" value={counts.drafts} />
+        <MetricCard label="Published" value={counts.published} />
+      </div>
+
+      {(message || errorMessage) && (
+        <div
+          className={`rounded-2xl border p-4 text-sm font-semibold ${
+            errorMessage
+              ? "border-rose-200 bg-rose-50 text-rose-700"
+              : "border-emerald-200 bg-emerald-50 text-emerald-700"
+          }`}
+        >
+          {errorMessage ?? message}
+        </div>
+      )}
+
+      <section className="rounded-[2rem] border border-slate-200 bg-white p-7 shadow-sm">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-primary">Course Admin</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
-              Preview Created Courses
-            </h1>
-            <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600">
-              Review saved roleplay courses, continue editing drafts, publish learner-ready
-              simulations, or launch a preview test call.
+            <h2 className="text-3xl font-bold tracking-tight text-slate-950">My Created Courses</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Create, edit, monitor analytics, review exam attempts, and manage deadlines for the
+              roleplay courses you own.
             </p>
           </div>
           <Link
             href="/course-builder/new"
-            className="inline-flex items-center justify-center rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
+            className="inline-flex items-center justify-center rounded-2xl bg-primary px-6 py-4 text-sm font-bold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
           >
-            Create Role Play
+            Create Course
           </Link>
         </div>
-        <div className="mt-6 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-2xl border border-blue-100 bg-white/80 p-4">
-            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Total</p>
-            <p className="mt-2 text-2xl font-semibold text-slate-950">{counts.total}</p>
-          </div>
-          <div className="rounded-2xl border border-amber-100 bg-amber-50/80 p-4">
-            <p className="text-xs uppercase tracking-[0.18em] text-amber-700">Drafts</p>
-            <p className="mt-2 text-2xl font-semibold text-amber-800">{counts.drafts}</p>
-          </div>
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 p-4">
-            <p className="text-xs uppercase tracking-[0.18em] text-emerald-700">Published</p>
-            <p className="mt-2 text-2xl font-semibold text-emerald-800">{counts.published}</p>
-          </div>
-        </div>
-      </header>
 
-      {roleplays.length === 0 ? (
-        <div className="rounded-3xl border border-dashed border-blue-200 bg-white/90 p-10 text-center shadow-soft">
-          <p className="text-xs uppercase tracking-[0.24em] text-primary">No roleplay courses</p>
-          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
-            No roleplay courses created yet
-          </h2>
-          <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-slate-600">
-            Start with the Role Play Builder to create a draft, publish it when ready, then preview
-            the learner-facing experience from this page.
-          </p>
-          <Link
-            href="/course-builder/new"
-            className="mt-6 inline-flex items-center justify-center rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
-          >
-            Create Role Play
-          </Link>
-        </div>
-      ) : (
-        <div className="grid gap-4">
-          {roleplays.map((roleplay) => {
-            const canManage = user ? canUserManageRolePlay(user, roleplay) : false;
+        {isLoading ? (
+          <div className="mt-8 rounded-[1.75rem] border border-dashed border-slate-300 bg-slate-50 p-10 text-center text-sm font-semibold text-slate-500">
+            Loading created courses...
+          </div>
+        ) : roleplays.length === 0 ? (
+          <div className="mt-8 rounded-[1.75rem] border border-dashed border-slate-300 bg-slate-50 p-10 text-center">
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-primary">
+              No roleplay courses
+            </p>
+            <h3 className="mt-3 text-2xl font-bold tracking-tight text-slate-950">
+              No roleplay courses created yet
+            </h3>
+            <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-slate-600">
+              Start with the Role Play Builder to create a draft, publish it when ready, then
+              preview the learner-facing experience from this page.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-8 space-y-3">
+            {roleplays.map((roleplay) => {
+              const courseAssessments = assessmentsForCourse(roleplay.id);
+              const courseAnalytics = analyticsForCourse(courseAssessments);
 
-            return (
-              <article
-                key={roleplay.id}
-                className="rounded-3xl border border-blue-100 bg-white p-5 shadow-soft"
-              >
-              <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="text-xl font-semibold tracking-tight text-slate-950">
-                      {roleplay.settings.meetingTitle}
-                    </h2>
-                    <StatusBadge status={roleplay.status} />
-                  </div>
-                  <p className="mt-2 text-sm font-medium text-blue-700">
-                    {roleplay.character.name} · {roleplay.character.role}
-                  </p>
-                  <p className="mt-3 line-clamp-2 max-w-4xl text-sm leading-6 text-slate-600">
-                    {roleplay.plan.scenario}
-                  </p>
-                  <div className="mt-4 grid gap-3 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-6">
-                    <div className="rounded-2xl bg-slate-50 p-3">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
-                        Duration
-                      </span>
-                      <span className="mt-1 block font-semibold text-slate-800">
-                        {roleplay.settings.durationMinutes} min
-                      </span>
+              return (
+                <article
+                  key={roleplay.id}
+                  className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-blue-100 hover:shadow-sm md:flex-row md:items-center md:justify-between"
+                >
+                  <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-bold text-slate-950">{roleplay.settings.meetingTitle}</h3>
+                      <StatusBadge status={roleplay.status} />
                     </div>
-                    <div className="rounded-2xl bg-slate-50 p-3">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
-                        Goals
+                    <div className="flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
+                      <span>{roleplay.settings.assignedTraineeIds?.length ?? 0} invitations</span>
+                      <span>{courseAnalytics.totalAttempts} attempts</span>
+                      <span>
+                        {courseAnalytics.passRate === null ? "N/A" : `${courseAnalytics.passRate}%`} pass rate
                       </span>
-                      <span className="mt-1 block font-semibold text-slate-800">
-                        {roleplay.settings.learnerGoals.length}
-                      </span>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-3">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
-                        Assigned Users
-                      </span>
-                      <span className="mt-1 block font-semibold text-slate-800">
-                        {roleplay.settings.assignedTraineeIds?.length ?? 0}
-                      </span>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-3">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
-                        Owner
-                      </span>
-                      <span className="mt-1 block font-semibold text-slate-800">
-                        {roleplay.createdBy?.name ?? "Root only"}
-                      </span>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-3">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
-                        Created
-                      </span>
-                      <span className="mt-1 block font-semibold text-slate-800">
-                        {formatDate(roleplay.createdAt)}
-                      </span>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-3">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-slate-400">
-                        Updated
-                      </span>
-                      <span className="mt-1 block font-semibold text-slate-800">
-                        {formatDate(roleplay.updatedAt)}
-                      </span>
+                      <span>Deadline: {formatDate(roleplay.settings.deadlineAt)}</span>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex shrink-0 flex-wrap gap-2 xl:max-w-xs xl:justify-end">
-                  <Link
-                    href={`/course-builder?preview=${roleplay.id}`}
-                    className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-700"
-                  >
-                    Preview/Test
-                  </Link>
-                  {canManage ? (
-                    <>
-                      <Link
-                        href={`/course-builder/${roleplay.id}/edit`}
-                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50"
-                      >
-                        Edit
-                      </Link>
-                      {roleplay.status === "draft" ? (
-                        <button
-                          type="button"
-                          onClick={() => void updateStatus(roleplay.id, "published")}
-                          className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-600"
-                        >
-                          Publish
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => void updateStatus(roleplay.id, "draft")}
-                          className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
-                        >
-                          Unpublish
-                        </button>
-                      )}
+                  <div className="flex items-center gap-1 md:justify-end">
+                    <ActionIconLink href={`/course-builder?preview=${roleplay.id}`} label="Preview course">
+                      <EyeIcon className="h-4 w-4" />
+                    </ActionIconLink>
+                    <ActionIconLink href={`/course-builder/${roleplay.id}/attempts`} label="View attempts">
+                      <UsersIcon className="h-4 w-4" />
+                    </ActionIconLink>
+                    <ActionIconLink href={`/course-builder/${roleplay.id}/analytics`} label="View analytics">
+                      <BarChart3Icon className="h-4 w-4" />
+                    </ActionIconLink>
+                    <ActionIconLink href={`/course-builder/${roleplay.id}/edit`} label="Edit course">
+                      <EditIcon className="h-4 w-4" />
+                    </ActionIconLink>
                     <button
                       type="button"
                       onClick={() => void deleteRolePlay(roleplay.id)}
-                      className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
+                      title="Delete course"
+                      aria-label="Delete course"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-rose-500 transition hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus:ring-4 focus:ring-rose-100"
                     >
-                      Delete
+                      <Trash2Icon className="h-4 w-4" />
+                      <span className="sr-only">Delete course</span>
                     </button>
-                    </>
-                  ) : (
-                    <span className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-500">
-                      Owner-only management
-                    </span>
-                  )}
-                </div>
-              </div>
-            </article>
-            );
-          })}
-        </div>
-      )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </section>
   );
 }
