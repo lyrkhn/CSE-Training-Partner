@@ -102,6 +102,35 @@ export function SearchIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function SparklesIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
+      <path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
+      <path d="m5 3 .7 1.8 1.8.7-1.8.7L5 8l-.7-1.8-1.8-.7 1.8-.7z" />
+    </BaseIcon>
+  );
+}
+
+export function CogIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.51 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.2.6.75 1 1.4 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z" />
+    </BaseIcon>
+  );
+}
+
+export function LogOutIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
+    </BaseIcon>
+  );
+}
+
 export function PanelLeftIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <BaseIcon {...props}>

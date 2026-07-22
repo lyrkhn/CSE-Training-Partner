@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { SparklesIcon } from "@/components/ui/icons";
 import type { AuthSessionUser } from "@/src/lib/auth/session";
 import type { Objective } from "@/src/lib/objectives/types";
 import { canUserManageRolePlay } from "@/src/lib/roleplays/access";
@@ -194,7 +195,6 @@ export function RolePlayBuilder({
   const [transcriptText, setTranscriptText] = useState("");
   const [transcriptFileName, setTranscriptFileName] = useState<string | null>(null);
   const [isGeneratingFromTranscript, setIsGeneratingFromTranscript] = useState(false);
-  const [isGeneratingScenarioAssist, setIsGeneratingScenarioAssist] = useState(false);
   const [transcriptGenerateMessage, setTranscriptGenerateMessage] = useState<string | null>(null);
   const [transcriptPrivacyNotes, setTranscriptPrivacyNotes] = useState<string[]>([]);
   const [draftMessage, setDraftMessage] = useState<string | null>(null);
@@ -583,60 +583,6 @@ export function RolePlayBuilder({
     }
   }
 
-  async function generateScenarioFromTranscript() {
-    setTranscriptGenerateMessage(null);
-    setDraftMessage(null);
-
-    if (transcriptText.trim().length < 80) {
-      setShowTranscriptGenerator(true);
-      setTranscriptGenerateMessage(
-        "Upload or paste a transcript first, then AI Assist can rewrite only the scenario.",
-      );
-      return;
-    }
-
-    setIsGeneratingScenarioAssist(true);
-
-    try {
-      const response = await fetch("/api/roleplays/generate-from-transcript", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: transcriptText }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        draft?: TranscriptRolePlayDraft;
-        error?: string;
-      };
-
-      if (!response.ok || !payload.draft) {
-        throw new Error(payload.error ?? `Unable to generate scenario. HTTP ${response.status}.`);
-      }
-
-      setScenario(payload.draft.scenario);
-      setAiCustomerKeyPointsText(listToLines(payload.draft.aiCustomerKeyPoints));
-      setOriginalCallSummary(payload.draft.originalCallSummary);
-      setAiCustomerBehavior(
-        replaceDraftCharacterName(
-          payload.draft.aiCustomerBehavior,
-          payload.draft.characterName,
-          characterName,
-        ),
-      );
-      setTranscriptPrivacyNotes(payload.draft.privacyNotes);
-      setTranscriptGenerateMessage(
-        "AI Assist updated the scenario and prompt-only AI customer talking points from the transcript.",
-      );
-    } catch (error) {
-      setTranscriptGenerateMessage(
-        error instanceof Error
-          ? error.message
-          : "Unable to generate a scenario from the transcript.",
-      );
-    } finally {
-      setIsGeneratingScenarioAssist(false);
-    }
-  }
-
   const progressPercent = Math.round(((step + 1) / steps.length) * 100);
   const isFinalStep = step === steps.length - 1;
   const isBuilderActionRunning = Boolean(activeBuilderAction);
@@ -989,10 +935,11 @@ export function RolePlayBuilder({
                       setShowTranscriptGenerator((current) => !current);
                       setTranscriptGenerateMessage(null);
                     }}
-                    className="inline-flex items-center justify-center rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 shadow-sm transition hover:bg-cyan-100"
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-cyan-200 bg-cyan-50 px-3.5 py-2 text-xs font-semibold text-cyan-800 shadow-sm transition hover:bg-cyan-100"
                     aria-expanded={showTranscriptGenerator}
                   >
-                    Generate from Transcript
+                    <SparklesIcon className="h-4 w-4" />
+                    <span>Generate from Transcript</span>
                   </button>
                 </div>
                 {showTranscriptGenerator && (
@@ -1080,21 +1027,7 @@ export function RolePlayBuilder({
                   </div>
                 )}
                 <label className="block space-y-2">
-                  <span className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <span className="text-sm font-medium text-slate-700">Scenario</span>
-                    <button
-                      type="button"
-                      onClick={() => void generateScenarioFromTranscript()}
-                      disabled={
-                        isGeneratingScenarioAssist ||
-                        isGeneratingFromTranscript ||
-                        isBuilderActionRunning
-                      }
-                      className="inline-flex items-center justify-center rounded-xl border border-blue-100 bg-white px-3 py-1.5 text-xs font-semibold text-primary shadow-sm transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {isGeneratingScenarioAssist ? "Generating..." : "AI Assist"}
-                    </button>
-                  </span>
+                  <span className="text-sm font-medium text-slate-700">Scenario</span>
                   <textarea
                     value={scenario}
                     onChange={(event) => setScenario(event.target.value)}
